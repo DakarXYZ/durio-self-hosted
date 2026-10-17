@@ -6,7 +6,16 @@
 
 const NOT_YET_INITIALIZED = 94;
 
-const conn = new Mongo("mongodb://database:27017/?directConnection=true");
+// The server may still be switching from the first-start init mongod to the real one: retry.
+let conn;
+for (let attempt = 1; !conn; attempt++) {
+  try {
+    conn = new Mongo("mongodb://database:27017/?directConnection=true");
+  } catch (e) {
+    if (attempt >= 60) throw e;
+    sleep(1000);
+  }
+}
 const admin = conn.getDB("admin");
 admin.auth("root", process.env.MONGO_ROOT_PASSWORD);
 

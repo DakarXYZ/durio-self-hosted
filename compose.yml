@@ -66,7 +66,9 @@ services:
     volumes:
       - ./data/db:/data/db
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand({ping: 1}).ok"]
+      # Ping over the container hostname, not localhost: on the first start the image runs a
+      # temporary localhost-only mongod to create the root user, which must not count as healthy.
+      test: ["CMD-SHELL", "mongosh --quiet --host \"$$(hostname)\" --eval 'db.adminCommand({ping: 1}).ok'"]
       interval: 10s
       timeout: 10s
       retries: 6

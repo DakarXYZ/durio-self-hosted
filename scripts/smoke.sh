@@ -71,14 +71,16 @@ else
     echo "ok   /api/ -> revolt $version"
 fi
 
-# A 3 MiB body must reach the API (Rocket limit 4 MiB): anything but 413 from Caddy is fine.
-code=$(head -c 3145728 /dev/zero | curl "${curl_opts[@]}" -o /dev/null -w '%{http_code}' \
+# A 3 MiB body must reach the API, i.e. Caddy must not cut it. Rocket itself rejects JSON bodies
+# over 1 MiB with 413, so a 413 is fine as long as it came from the API (it sets x-ratelimit-*).
+headers=$(head -c 3145728 /dev/zero | curl "${curl_opts[@]}" -o /dev/null -D - \
     -X POST -H 'Content-Type: application/json' --data-binary @- "$base/api/auth/session/login" || true)
-if [[ $code == 413 || $code == 000 ]]; then
-    echo "FAIL POST 3 MiB /api -> $code"
+code=$(printf '%s\n' "$headers" | awk 'NR == 1 { print $2 }')
+if [[ -z $code ]] || ! grep -qi '^x-ratelimit-limit:' <<<"$headers"; then
+    echo "FAIL POST 3 MiB /api -> ${code:-000} (did not reach the API)"
     failed=1
 else
-    echo "ok   POST 3 MiB /api -> $code"
+    echo "ok   POST 3 MiB /api -> $code from the API"
 fi
 
 # WebSocket endpoint: upgrade must reach events (101/4xx from bonfire), not 404/502 from Caddy.
