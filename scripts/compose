@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# docker compose with our env files:
+#   docker compose --env-file .env --env-file secrets.env [--env-file images.lock.env] "$@"
+# Usage: scripts/compose up -d | scripts/compose ps | scripts/compose logs -f api
+set -Eeuo pipefail
+# shellcheck source=scripts/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+require_config
+compose "$@"

@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: shellcheck + no IPv4 literals
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -x scripts/*.sh scripts/compose scripts/ci/*.sh .githooks/pre-commit
+      - name: no server IPs in tracked files
+        run: scripts/check-no-ip.sh
+
+  config:
+    name: config ${{ matrix.mode }} / ${{ matrix.storage }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [duckdns, duckdns-noddns, sslip, domain, ip, lan, behind-proxy]
+        storage: [minio, s3]
+    steps:
+      - uses: actions/checkout@v4
+      - name: compose version
+        run: docker compose version
+      # generate_config.sh -> compose config -q -> check-ports.sh -> caddy validate -> --overwrite checks
+      - name: generate and validate
+        run: scripts/ci/test-config.sh "${{ matrix.mode }}" "${{ matrix.storage }}"

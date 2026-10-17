@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# External smoke test of a running server (SH-05/SH-07).
+#
+#   scripts/smoke.sh [--domain D] [--expect-version 0.16.0+fork.N] [--local]
+#
+# --local   resolve the domain to 127.0.0.1 (server itself, lan mode, DNS not ready yet)
+# In lan mode Caddy's local CA (data/caddy-data/...) is trusted automatically.
+set -Eeuo pipefail
+# shellcheck source=scripts/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+require_cmd curl jq
+
+DOMAIN=$(env_get STOAT_DOMAIN "$ENV_FILE")
+EXPECT=
+LOCAL=0
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --domain) DOMAIN=$2; shift ;;
+        --expect-version) EXPECT=$2; shift ;;
+        --local) LOCAL=1 ;;
+        *) die "unknown option $1" ;;
+    esac
+    shift
+done
+[[ -n $DOMAIN ]] || die "no domain (.env STOAT_DOMAIN or --domain)"
+
+curl_opts=(-sS --max-time 15)
+[[ $LOCAL -eq 1 ]] && curl_opts+=(--resolve "$DOMAIN:443:127.0.0.1" --resolve "$DOMAIN:80:127.0.0.1")
+ca="$ROOT/data/caddy-data/caddy/pki/authorities/local/root.crt"
+if [[ $(env_get ADDRESS_MODE "$ENV_FILE") == lan && -f $ca ]]; then
+    curl_opts+=(--cacert "$ca")
+fi
+base="https://$DOMAIN"
+failed=0
+
+check_code() { # PATH EXPECTED_CODE [extra curl args...]
+    local path=$1 want=$2 got
+    shift 2
+    got=$(curl "${curl_opts[@]}" -o /dev/null -w '%{http_code}' "$@" "$base$path" || true)
+    if [[ $got == "$want" ]]; then
+        echo "ok   $path -> $got"
+    else
+        echo "FAIL $path -> $got (want $want)"
+        failed=1
+    fi
+}
+
+check_code / 200
+check_code /ingress 404
+check_code /ingress/worldwide 404
+check_code /autumn/ 200
+check_code /january/ 200
+
+discovery=$(curl "${curl_opts[@]}" "$base/.well-known/stoat" || true)
+if jq -e --arg api "$base/api" '.api == $api' <<<"$discovery" >/dev/null 2>&1; then
+    echo "ok   /.well-known/stoat -> api $base/api"
+else
+    echo "FAIL /.well-known/stoat -> $discovery"
+    failed=1
+fi
+
+root=$(curl "${curl_opts[@]}" "$base/api/" || true)
+version=$(jq -r '.revolt // empty' <<<"$root" 2>/dev/null || true)
+if [[ -z $version ]]; then
+    echo "FAIL /api/ -> no \"revolt\" version"
+    failed=1
+elif [[ -n $EXPECT && $version != "$EXPECT" ]]; then
+    echo "FAIL /api/ -> revolt $version (want $EXPECT)"
+    failed=1
+else
+    echo "ok   /api/ -> revolt $version"
+fi
+
+# A 3 MiB body must reach the API (Rocket limit 4 MiB): anything but 413 from Caddy is fine.
+code=$(head -c 3145728 /dev/zero | curl "${curl_opts[@]}" -o /dev/null -w '%{http_code}' \
+    -X POST -H 'Content-Type: application/json' --data-binary @- "$base/api/auth/session/login" || true)
+if [[ $code == 413 || $code == 000 ]]; then
+    echo "FAIL POST 3 MiB /api -> $code"
+    failed=1
+else
+    echo "ok   POST 3 MiB /api -> $code"
+fi
+
+# WebSocket endpoint: upgrade must reach events (101/4xx from bonfire), not 404/502 from Caddy.
+code=$(curl "${curl_opts[@]}" -o /dev/null -w '%{http_code}' --http1.1 \
+    -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+    -H 'Sec-WebSocket-Key: ZHVyaW8tc21va2UtdGVzdA==' "$base/ws" || true)
+if [[ $code == 404 || $code == 502 || $code == 000 ]]; then
+    echo "FAIL /ws -> $code"
+    failed=1
+else
+    echo "ok   /ws -> $code"
+fi
+
+# Certificate lifetime (not for lan): > 3 days, > 1 day in ip mode.
+if [[ $(env_get ADDRESS_MODE "$ENV_FILE") != lan ]] && command -v openssl >/dev/null 2>&1; then
+    min=259200
+    [[ $(env_get ADDRESS_MODE "$ENV_FILE") == ip ]] && min=86400
+    connect=$DOMAIN:443
+    [[ $LOCAL -eq 1 ]] && connect=127.0.0.1:443
+    if echo | openssl s_client -connect "$connect" -servername "$DOMAIN" 2>/dev/null |
+        openssl x509 -noout -checkend "$min" >/dev/null; then
+        echo "ok   certificate valid > $((min / 86400)) days"
+    else
+        echo "FAIL certificate expires within $((min / 86400)) days (or no TLS)"
+        failed=1
+    fi
+fi
+
+[[ $failed -eq 0 ]] || die "smoke test failed"
+echo "smoke: OK"

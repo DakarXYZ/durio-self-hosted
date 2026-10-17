@@ -1,228 +1,366 @@
-name: stoat
+# dur.io server stack.
+#
+# Always run through scripts/compose (= docker compose --env-file .env --env-file secrets.env ...):
+# third-party containers receive their credentials by interpolation from secrets.env.
+# .env, secrets.env and the generated configs come from scripts/generate_config.sh and are not in git.
+#
+# Only `caddy` and `livekit` publish ports (checked in CI by scripts/check-ports.sh).
+name: durio
+
+x-logging: &logging
+  driver: local
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+# Backend services built from our fork. Config is read from the image's CWD
+# (/home/nonroot); secrets come only from secrets.env as REVOLT__... variables.
+x-backend: &backend
+  env_file: secrets.env
+  restart: unless-stopped
+  logging: *logging
+  volumes:
+    - ./Revolt.toml:/home/nonroot/Revolt.toml:ro
+    - ./Revolt.overrides.toml:/home/nonroot/Revolt.overrides.toml:ro
+  deploy:
+    resources:
+      limits:
+        memory: 256M
+
+x-backend-depends: &backend-depends
+  database-init:
+    condition: service_completed_successfully
+  redis:
+    condition: service_healthy
+  rabbit:
+    condition: service_healthy
+
+x-healthcheck: &healthcheck
+  interval: 15s
+  timeout: 3s
+  retries: 5
+  start_period: 60s
 
 services:
-  # MongoDB: Database
+  # MongoDB: single-node replica set rs0 with auth (transactions, mongodump --oplog).
   database:
-    image: docker.io/mongo:8
-    restart: always
+    image: docker.io/library/mongo:8.0.34
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?missing in secrets.env, run scripts/generate_config.sh}
+      MONGO_KEYFILE: ${MONGO_KEYFILE:?missing in secrets.env, run scripts/generate_config.sh}
+    # The replica set keyFile must be 0400 and owned by mongodb: write it from env on every start.
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        mkdir -p /etc/mongo
+        (umask 077 && printf '%s\n' "$$MONGO_KEYFILE" > /etc/mongo/keyfile)
+        chown mongodb:mongodb /etc/mongo/keyfile
+        chmod 0400 /etc/mongo/keyfile
+        unset MONGO_KEYFILE
+        exec docker-entrypoint.sh mongod --replSet rs0 --bind_ip_all \
+          --keyFile /etc/mongo/keyfile --wiredTigerCacheSizeGB 0.5
     volumes:
       - ./data/db:/data/db
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand({ping: 1}).ok"]
       interval: 10s
       timeout: 10s
-      retries: 5
-      start_period: 10s
+      retries: 6
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
 
-  # Redis: Event message broker & KV store
-  redis:
-    image: valkey/valkey:9-alpine
-    restart: always
-
-  # RabbitMQ: Internal message broker
-  rabbit:
-    image: docker.io/rabbitmq:4
-    restart: always
+  # One-shot: rs.initiate + application user `revolt`. Idempotent, runs on every `up`.
+  database-init:
+    image: docker.io/library/mongo:8.0.34
+    restart: "no"
+    logging: *logging
+    depends_on:
+      database:
+        condition: service_healthy
     environment:
-      RABBITMQ_DEFAULT_USER: rabbituser
-      RABBITMQ_DEFAULT_PASS: rabbitpass
+      MONGO_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?}
+      MONGO_REVOLT_PASSWORD: ${MONGO_REVOLT_PASSWORD:?missing in secrets.env, run scripts/generate_config.sh}
+    entrypoint: ["mongosh", "--quiet", "--nodb", "/init-replica-set.js"]
+    volumes:
+      - ./config/mongo/init-replica-set.js:/init-replica-set.js:ro
+
+  # Valkey: event broker & KV store. Deliberately without persistence:
+  # a restart drops presence/sessions caches and ongoing LiveKit room state.
+  redis:
+    image: docker.io/valkey/valkey:9.0.6-alpine
+    restart: unless-stopped
+    logging: *logging
+    command:
+      - valkey-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 200mb
+      - --maxmemory-policy
+      - allkeys-lru
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+  # RabbitMQ: internal message broker. Credentials apply only to an empty data/rabbit.
+  rabbit:
+    image: docker.io/library/rabbitmq:4.2.9
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      RABBITMQ_DEFAULT_USER: ${REVOLT__RABBIT__USERNAME:?missing in secrets.env, run scripts/generate_config.sh}
+      RABBITMQ_DEFAULT_PASS: ${REVOLT__RABBIT__PASSWORD:?missing in secrets.env, run scripts/generate_config.sh}
     volumes:
       - ./data/rabbit:/var/lib/rabbitmq
     healthcheck:
-      test: rabbitmq-diagnostics -q ping
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
       timeout: 10s
-      retries: 3
+      retries: 5
       start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
-  # MinIO: S3-compatible storage server
+  # MinIO-compatible S3 server (profile `minio`; off with --storage s3).
   minio:
-    image: docker.io/pgsty/silo
-    command: server /data
-    volumes:
-      - ./data/minio:/data
+    image: docker.io/pgsty/silo:RELEASE.2026-09-16T00-00-00Z
+    profiles: [minio]
+    restart: unless-stopped
+    logging: *logging
+    command: ["server", "/data"]
     environment:
-      MINIO_ROOT_USER: minioautumn
-      MINIO_ROOT_PASSWORD: minioautumn
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?missing in secrets.env, run scripts/generate_config.sh}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?missing in secrets.env, run scripts/generate_config.sh}
       MINIO_DOMAIN: minio
+    volumes:
+      - ${MINIO_DATA_PATH:-./data/minio}:/data
     networks:
       default:
         aliases:
+          # path_style_buckets = false: autumn talks to <bucket>.minio
           - revolt-uploads.minio
-          # legacy support:
-          - attachments.minio
-          - avatars.minio
-          - backgrounds.minio
-          - icons.minio
-          - banners.minio
-          - emojis.minio
-    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
-  # Caddy: Web server
+  # One-shot: bucket + service account for autumn (scoped to the bucket).
+  createbuckets:
+    image: docker.io/pgsty/mc:RELEASE.2026-09-16T00-00-00Z
+    profiles: [minio]
+    restart: "no"
+    logging: *logging
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MC_HOST_minio: http://${MINIO_ROOT_USER:?}:${MINIO_ROOT_PASSWORD:?}@minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?}
+      AUTUMN_ACCESS_KEY: ${REVOLT__FILES__S3__ACCESS_KEY_ID:?missing in secrets.env, run scripts/generate_config.sh}
+      AUTUMN_SECRET_KEY: ${REVOLT__FILES__S3__SECRET_ACCESS_KEY:?missing in secrets.env, run scripts/generate_config.sh}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        until mc ready minio >/dev/null 2>&1; do echo 'waiting for minio...'; sleep 1; done
+        mc mb --ignore-existing minio/revolt-uploads
+        if mc admin user svcacct info minio "$$AUTUMN_ACCESS_KEY" >/dev/null 2>&1; then
+          echo 'service account for autumn exists'
+        else
+          printf '%s' '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:*"],"Resource":["arn:aws:s3:::revolt-uploads","arn:aws:s3:::revolt-uploads/*"]}]}' > /tmp/autumn-policy.json
+          mc admin user svcacct add --access-key "$$AUTUMN_ACCESS_KEY" --secret-key "$$AUTUMN_SECRET_KEY" \
+            --policy /tmp/autumn-policy.json --name autumn minio "$$MINIO_ROOT_USER" >/dev/null
+          echo 'service account for autumn created'
+        fi
+
+  # Caddy: TLS + reverse proxy. Mode-specific snippets: config/caddy/*.caddy (generated).
   caddy:
-    image: docker.io/caddy
-    restart: always
-    env_file: .env.web
+    image: docker.io/library/caddy:2.10.2-alpine
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      STOAT_DOMAIN: ${STOAT_DOMAIN:?missing in .env, run scripts/generate_config.sh}
+      CADDY_SITE: ${CADDY_SITE:?missing in .env, run scripts/generate_config.sh}
     ports:
       - "80:80"
       - "443:443"
+      - "443:443/udp"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./config/caddy:/etc/caddy/durio:ro
+      - ./config/site:/srv/site:ro
+      - ./config/well-known:/srv/well-known:ro
+      - ./stoat.json:/srv/discovery/stoat.json:ro
       - ./data/caddy-data:/data
       - ./data/caddy-config:/config
-      - ./stoat.json:/stoat.json
+    depends_on:
+      api:
+        condition: service_healthy
+      events:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:2019/config/"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
     networks:
       default:
         aliases:
-         - "${STOAT_DOMAIN:-caddy}"
+          # hairpin: containers reach https://$STOAT_DOMAIN without leaving the docker network
+          - ${CADDY_NETWORK_ALIAS:-caddy}
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
-  # API server
+  # REST API. The only service that runs database migrations on start.
   api:
-    image: ghcr.io/stoatchat/api:v0.15.5
-    env_file: secrets.env
-    depends_on:
-      database:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      rabbit:
-        condition: service_healthy
-    volumes:
-      - type: bind
-        source: ./Revolt.toml
-        target: /Revolt.toml
-    restart: always
+    <<: *backend
+    image: ${IMAGE_REGISTRY-ghcr.io/dakarxyz/}durio-api:${APP_TAG:?missing in .env}${API_DIGEST-}
+    depends_on: *backend-depends
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "/usr/local/bin/healthcheck", "http", "127.0.0.1:14702", "/"]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
-  # Events service
+  # WebSocket events (bonfire).
   events:
-    image: ghcr.io/stoatchat/events:v0.15.5
-    env_file: secrets.env
-    depends_on:
-      database:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    volumes:
-      - type: bind
-        source: ./Revolt.toml
-        target: /Revolt.toml
-    restart: always
+    <<: *backend
+    image: ${IMAGE_REGISTRY-ghcr.io/dakarxyz/}durio-events:${APP_TAG:?missing in .env}${EVENTS_DIGEST-}
+    depends_on: *backend-depends
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "/usr/local/bin/healthcheck", "tcp", "127.0.0.1:14703"]
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
-  # File server
+  # File server.
   autumn:
-    image: ghcr.io/stoatchat/file-server:v0.15.5
-    env_file: secrets.env
+    <<: *backend
+    image: ${IMAGE_REGISTRY-ghcr.io/dakarxyz/}durio-file-server:${APP_TAG:?missing in .env}${FILE_SERVER_DIGEST-}
     depends_on:
-      database:
-        condition: service_healthy
+      <<: *backend-depends
       createbuckets:
-        condition: service_started
-    volumes:
-      - type: bind
-        source: ./Revolt.toml
-        target: /Revolt.toml
-    restart: always
+        condition: service_completed_successfully
+        required: false
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "/usr/local/bin/healthcheck", "http", "127.0.0.1:14704", "/"]
+    deploy:
+      resources:
+        limits:
+          memory: 768M
 
-  # Metadata and image proxy
+  # Metadata and image proxy.
   january:
-    image: ghcr.io/stoatchat/proxy:v0.15.5
-    env_file: secrets.env
-    volumes:
-      - type: bind
-        source: ./Revolt.toml
-        target: /Revolt.toml
-    restart: always
+    <<: *backend
+    image: ${IMAGE_REGISTRY-ghcr.io/dakarxyz/}durio-proxy:${APP_TAG:?missing in .env}${PROXY_DIGEST-}
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "/usr/local/bin/healthcheck", "http", "127.0.0.1:14705", "/"]
+    deploy:
+      resources:
+        limits:
+          memory: 768M
 
-  # Tenor proxy
+  # Tenor proxy (profile `gifbox`, off by default: external API key, leaks search queries).
   gifbox:
-    image: ghcr.io/stoatchat/gifbox:v0.15.5
-    env_file: secrets.env
-    volumes:
-      - type: bind
-        source: ./Revolt.toml
-        target: /Revolt.toml
-    restart: always
+    <<: *backend
+    image: ${IMAGE_REGISTRY-ghcr.io/dakarxyz/}durio-gifbox:${APP_TAG:?missing in .env}${GIFBOX_DIGEST-}
+    profiles: [gifbox]
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "/usr/local/bin/healthcheck", "http", "127.0.0.1:14706", "/"]
 
-  # Regular task daemon
+  # Periodic tasks. No HTTP: health = process alive.
   crond:
-    image: ghcr.io/stoatchat/crond:v0.15.5
-    env_file: secrets.env
+    <<: *backend
+    image: ${IMAGE_REGISTRY-ghcr.io/dakarxyz/}durio-crond:${APP_TAG:?missing in .env}${CROND_DIGEST-}
     depends_on:
-      database:
-        condition: service_healthy
-      minio:
-        condition: service_started
-    volumes:
-      - type: bind
-        source: ./Revolt.toml
-        target: /Revolt.toml
-    restart: always
+      <<: *backend-depends
+      createbuckets:
+        condition: service_completed_successfully
+        required: false
 
-  # Push notification daemon
+  # Push notifications (FCM). No HTTP: health = process alive.
   pushd:
-    image: ghcr.io/stoatchat/pushd:v0.15.5
-    env_file: secrets.env
-    depends_on:
-      database:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      rabbit:
-        condition: service_healthy
-    volumes:
-      - type: bind
-        source: ./Revolt.toml
-        target: /Revolt.toml
-    restart: always
+    <<: *backend
+    image: ${IMAGE_REGISTRY-ghcr.io/dakarxyz/}durio-pushd:${APP_TAG:?missing in .env}${PUSHD_DIGEST-}
+    depends_on: *backend-depends
 
-   # Voice ingress daemon
+  # LiveKit webhook receiver (internal only; /ingress is 404 in Caddy).
   voice-ingress:
-    image: ghcr.io/stoatchat/voice-ingress:v0.15.5
-    env_file: secrets.env
-    restart: always
-    depends_on:
-      database:
-        condition: service_healthy
-      rabbit:
-        condition: service_healthy
-    volumes:
-      - type: bind
-        source: ./Revolt.toml
-        target: /Revolt.toml
+    <<: *backend
+    image: ${IMAGE_REGISTRY-ghcr.io/dakarxyz/}durio-voice-ingress:${APP_TAG:?missing in .env}${VOICE_INGRESS_DIGEST-}
+    depends_on: *backend-depends
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "/usr/local/bin/healthcheck", "tcp", "127.0.0.1:8500"]
 
+  # LiveKit SFU. API keys come from env (LIVEKIT_KEYS), livekit.yml holds no secrets.
   livekit:
-    image: ghcr.io/stoatchat/livekit-server:v1.9.14
-    depends_on:
-      redis:
-        condition: service_started
-    command: --config /etc/livekit.yml
+    image: docker.io/livekit/livekit-server:v1.9.12
+    restart: unless-stopped
+    logging: *logging
+    command: ["--config", "/etc/livekit.yml"]
+    environment:
+      LIVEKIT_KEYS: "${REVOLT__API__LIVEKIT__NODES__WORLDWIDE__KEY:?}: ${REVOLT__API__LIVEKIT__NODES__WORLDWIDE__SECRET:?}"
+      # Empty = discover via STUN (use_external_ip). Set by the generator in sslip/ip/lan modes.
+      NODE_IP: ${LIVEKIT_NODE_IP:-}
     ports:
       - "7881:7881"
-      - "50000-50100:50000-50100/udp"
-    restart: always
+      - "7882:7882/udp"
     volumes:
-      - type: bind
-        source: ./livekit.yml
-        target: /etc/livekit.yml
-
-  # Create buckets for minio.
-  createbuckets:
-    image: docker.io/pgsty/mc
+      - ./livekit.yml:/etc/livekit.yml:ro
     depends_on:
-      - minio
-    entrypoint: >
-      /bin/sh -c "
-      while ! /usr/bin/mc ready minio; do
-        /usr/bin/mc alias set minio http://minio:9000 minioautumn minioautumn;
-        echo 'Waiting minio...' && sleep 1;
-      done;
-      /usr/bin/mc mb minio/revolt-uploads;
-      exit 0;
-      "
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
-  # Web App
-  web:
-    # for-web v0.15.3
-    image: ghcr.io/stoatchat/for-web:4017c18
-    restart: always
-    env_file: .env.web
+  # DuckDNS IP updater (profile `duckdns`; not needed with a static IP: --no-ddns).
+  duckdns:
+    image: lscr.io/linuxserver/duckdns:8d8f7eba-ls93
+    profiles: [duckdns]
+    restart: unless-stopped
+    logging: *logging
+    environment:
+      SUBDOMAINS: ${DUCKDNS_SUBDOMAIN:-}
+      TOKEN: ${DUCKDNS_TOKEN:-}
+      UPDATE_IP: ipv4
+      LOG_FILE: "false"
+      TZ: Etc/UTC
+    deploy:
+      resources:
+        limits:
+          memory: 32M

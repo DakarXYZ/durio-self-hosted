@@ -1,0 +1,17 @@
+# Copy to compose.override.yml (not in git) for local changes; scripts/compose picks it up.
+# Never publish more ports here: only caddy and livekit may be reachable (Docker bypasses ufw).
+services:
+  # Enable the GIF picker (needs a Tenor key: REVOLT__API__SECURITY__TENOR_KEY in secrets.env).
+  # Prefer COMPOSE_PROFILES=minio,gifbox in .env over this.
+  # gifbox:
+  #   profiles: !reset []
+
+  # Local development: reach Mongo from the host ONLY on loopback.
+  # database:
+  #   ports:
+  #     - "127.0.0.1:27017:27017"
+
+  # Behind another reverse proxy on the same host: publish Caddy on loopback only.
+  # caddy:
+  #   ports: !override
+  #     - "127.0.0.1:8880:80"

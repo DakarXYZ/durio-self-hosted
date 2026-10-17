@@ -1,397 +1,168 @@
-<div align="center">
-<h1>
-  Stoat Self-Hosted
-  
-  [![Stars](https://img.shields.io/github/stars/stoatchat/self-hosted?style=flat-square&logoColor=white)](https://github.com/stoatchat/self-hosted/stargazers)
-  [![Forks](https://img.shields.io/github/forks/stoatchat/self-hosted?style=flat-square&logoColor=white)](https://github.com/stoatchat/self-hosted/network/members)
-  [![Pull Requests](https://img.shields.io/github/issues-pr/stoatchat/self-hosted?style=flat-square&logoColor=white)](https://github.com/stoatchat/self-hosted/pulls)
-  [![Issues](https://img.shields.io/github/issues/stoatchat/self-hosted?style=flat-square&logoColor=white)](https://github.com/stoatchat/self-hosted/issues)
-  [![Contributors](https://img.shields.io/github/contributors/stoatchat/self-hosted?style=flat-square&logoColor=white)](https://github.com/stoatchat/self-hosted/graphs/contributors)
-  [![License](https://img.shields.io/github/license/stoatchat/self-hosted?style=flat-square&logoColor=white)](https://github.com/stoatchat/self-hosted/blob/main/LICENSE)
-</h1>
-Self-hosting Stoat using Docker
-</div>
-<br/>
+# durio-self-hosted
 
-This repository contains configurations and instructions that can be used for deploying a full instance of Stoat, including the back-end, web front-end, file server, and metadata and image proxy.
-
-## Table of Contents
-
-- [Disclaimers and Information](#disclaimers-and-information)
-- [Deployment](#deployment)
-  - [Securing your server](#securing-your-server)
-  - [Configuring your domain](#configuring-your-domain)
-  - [Install Required Dependencies](#install-required-dependencies)
-- [Configuration](#configuration)
-- [Updating](#updating)
-- [Additional Notes](#additional-notes)
-  - [Placing Behind Another Reverse-Proxy or Another Port](#placing-behind-another-reverse-proxy-or-another-port)
-  - [Insecurely Expose the Database](#insecurely-expose-the-database)
-  - [Mongo Compatibility](#mongo-compatibility)
-  - [KeyDB Compatibility](#keydb-compatibility)
-  - [Why ports 7881 and 50000-50100/udp aren't in the Caddyfile](#why-ports-7881-and-50000-50100udp-arent-in-the-caddyfile)
-  - [Getting kicked on video enabled instances when turning on video](#getting-kicked-on-video-enabled-instances-when-turning-on-video)
-- [Notices](#notices)
-- [Security Advisories](#security-advisories)
-- [Guides](Guides.md)
-
-## Disclaimers and Information
+Развёртывание сервера мессенджера **dur.io** (Docker Compose, Ubuntu Server). Форк
+[stoatchat/self-hosted](https://github.com/stoatchat/self-hosted), запускает **наши** образы
+`ghcr.io/dakarxyz/durio-*`. dur.io основан на Stoat и не связан с ним; «Stoat» — товарный знак его владельцев.
 
 > [!WARNING]
-> If you are updating an instance from before February 28, 2026, please consult the [notices section](#notices) at the bottom.
+> **Бэкапов нет.** По умолчанию резервное копирование выключено (`BACKUP_ENABLED=false`, цель не задана).
+> Потеря диска = потеря всех данных и `secrets.env`, а без `REVOLT__FILES__ENCRYPTION_KEY` из `secrets.env`
+> нечитаемы **все** файлы. Сразу после установки сохраните зашифрованную копию `secrets.env` вне сервера и
+> включите бэкапы, как только появится цель (см. [Бэкапы](#бэкапы)).
 
-> [!IMPORTANT]
-> A list of security advisories is [provided at the bottom](#security-advisories).
+## Состав
 
-> [!NOTE]
-> Currently, most official clients do not support self-hosted instances. The web client works well, and when you use the [PWA](https://developer.mozilla.org/en-US/docs/Web/Progressive_web_apps/Guides/What_is_a_progressive_web_app) the experience is close to a native app. For more instructions regarding clients please see the [Guides](Guides.md) section of the readme.
+| Сервис | Образ | Назначение |
+| --- | --- | --- |
+| api, events, autumn, january, crond, pushd, voice-ingress | `durio-api`, `durio-events`, `durio-file-server`, `durio-proxy`, `durio-crond`, `durio-pushd`, `durio-voice-ingress` | бэкенд |
+| gifbox | `durio-gifbox` | профиль `gifbox`, по умолчанию выключен |
+| database + database-init | `mongo:8.0` | replica set `rs0` из одного узла, с авторизацией |
+| redis, rabbit | `valkey`, `rabbitmq` | брокеры (без бэкапа, эфемерны) |
+| minio + createbuckets | `pgsty/silo`, `pgsty/mc` | профиль `minio`: файлы на сервере |
+| caddy | `caddy:2.10` | TLS, прокси, discovery `/.well-known/stoat`, статическая страница `/` |
+| livekit | `livekit-server` | голос и видео |
+| duckdns | `linuxserver/duckdns` | профиль `duckdns`: обновление IP |
 
-> [!NOTE]
-> Please consult _[What can I do with Stoat and how do I self-host?](https://developers.stoat.chat/faq)_ on our developer site for information about licensing and brand use.
+Браузерного клиента нет: на `/` — страница со ссылками на приложения и исходники (`config/site/`).
+Наружу открыты только `caddy` (80, 443/tcp+udp) и `livekit` (7881/tcp, 7882/udp) — см.
+[docs/host-security.md](docs/host-security.md).
 
-> [!TIP]
-> For guides on how to perform common configuration alterations like using NGINX or setting your instance to invite only, see the [Guides](Guides.md) section of the readme.
+## Файлы
 
-## Deployment
+| Файл | В git | Кто пишет |
+| --- | --- | --- |
+| `compose.yml`, `Caddyfile`, `config/site/`, `config/mongo/` | да | мы |
+| `.env` — адрес, режимы, профили, тег образов, `SERVER_IP` | нет | `generate_config.sh` (`--overwrite`) |
+| `secrets.env` (0600) — все секреты как `REVOLT__…` | нет | `generate_config.sh`, только дописывает |
+| `Revolt.toml` — производное от адреса и хранилища | нет | `generate_config.sh` (`--overwrite`) |
+| `Revolt.overrides.toml` — ручные политики | нет | создаётся один раз, дальше только вы |
+| `livekit.yml`, `stoat.json`, `config/caddy/*.caddy` | нет | `generate_config.sh` |
+| `images.lock.env` — дайджесты образов (необязательно) | нет | `upgrade.sh --pin-digests` |
 
-To get started, find yourself a suitable server to deploy onto, we recommend starting with at least 2 vCPUs and 2 GB of memory.
+Все команды compose — через `scripts/compose` (= `docker compose --env-file .env --env-file secrets.env`):
+сторонние контейнеры получают пароли подстановкой из `secrets.env`.
 
-> [!TIP]
->
-> **We've partnered with Hostinger to bring you a 20% discount off VPS hosting!**
->
-> 👉 https://www.hostinger.com/vps-hosting?REFERRALCODE=REVOLTCHAT
->
-> We recommend using the _KVM 2_ plan at minimum!\
-> Our testing environment for self-hosted currently sits on a KVM 2 instance, and we are happy to assist with issues.
+## Быстрый старт локально (режим `lan`)
 
-The instructions going forward will use Hostinger as an example hosting platform, but you should be able to adapt these to other platforms as necessary. There are important details throughout.
-
-![Select the location](.github/guide/hostinger-1.location.webp)
-
-When asked, choose **Ubuntu Server** as your operating system; this is used by us in production, and we recommend its use.
-
-![Select the operating system](.github/guide/hostinger-2.os.webp)
-
-If you've chosen to go with Hostinger, they include integrated malware scanning, which may be of interest:
-
-![Consider malware scanning](.github/guide/hostinger-3.malware.webp)
-
-You should set a secure root password for login (_or disable password login after setup, which is explained later! but you shouldn't make the password trivial until after this is secured at least!_) and we recommend that you configure an SSH key:
-
-![Configuration unfilled](.github/guide/hostinger-4.configuration.webp)
-![Configuration filled](.github/guide/hostinger-5.configuration.webp)
-
-Make sure to confirm everything is correct!
-
-![Confirmation](.github/guide/hostinger-6.complete.webp)
-
-Wait for your VPS to be created...
-
-| ![Wait for creation](.github/guide/hostinger-7.wait.webp) | ![Wait for creation](.github/guide/hostinger-8.connect.webp) |
-| --------------------------------------------------------- | ------------------------------------------------------------ |
-
-After installation, SSH into the machine:
+Нужны Docker (compose ≥ 2.24), bash, `openssl`, `jq`. Образы бэкенда собираются локально из
+[durio-chat](https://github.com/DakarXYZ/durio-chat) с именами `durio-api:local` и т. д.
 
 ```bash
-# use the provided IP address to connect:
-ssh root@<ip address>
-# .. if you have a SSH key configured
-ssh root@<ip address> -i path/to/id_rsa
+git config core.hooksPath .githooks          # pre-commit: запрет IPv4-адресов в коммитах
+scripts/generate_config.sh --address-mode lan --dev --local-images --address durio.lan \
+    [--server-ip <LAN-IP>]                   # IP нужен LiveKit, чтобы голос шёл с других устройств
+scripts/compose up -d
+scripts/compose ps
+scripts/smoke.sh --local
 ```
 
-### Securing your server
+`durio.lan` → IP машины в `hosts` клиента. TLS — самоподписанный корень Caddy
+`data/caddy-data/caddy/pki/authorities/local/root.crt`: установить на тестовые устройства (Android доверяет
+пользовательским CA только в debug-сборке).
+
+## Боевой сервер
+
+Пошагово — runbook деплоя (`docs/plan/60-deploy.md` в воркспейсе разработки): подготовка VPS, файрвол,
+затем:
 
 ```bash
-# update the system
-apt-get update && apt-get upgrade -y
-
-# configure firewall
-ufw allow ssh
-ufw allow http
-ufw allow https
-ufw allow 7881/tcp
-ufw allow 50000:50100/udp
-ufw default deny
-ufw enable
-
-# if you have configured an SSH key, disable password authentication:
-sudo sed -E -i 's|^#?(PasswordAuthentication)\s.*|\1 no|' /etc/ssh/sshd_config
-if ! grep '^PasswordAuthentication\s' /etc/ssh/sshd_config; then echo 'PasswordAuthentication no' |sudo tee -a /etc/ssh/sshd_config; fi
-
-# reboot to apply changes
-reboot
+git clone https://github.com/DakarXYZ/durio-self-hosted && cd durio-self-hosted
+git config core.hooksPath .githooks
+export SERVER_IP=...                         # только в окружении/.env, не в git
+scripts/generate_config.sh --address-mode duckdns --address <name>.duckdns.org --no-ddns \
+    --acme-email <почта> --app-tag 0.16.0-fork.N --storage minio --yes
+# сразу: age -r <ключ> secrets.env > secrets.env.age  и унести копию с сервера
+scripts/preflight.sh
+scripts/compose pull && scripts/compose up -d
+scripts/smoke.sh --expect-version 0.16.0+fork.N
 ```
 
-> [!NOTE]
-> If you are using another cloud provider, or you are doing this on a physical machine, you will need to forward ports 80, 443, 7881 and 50000-50100/udp.
+`--no-ddns` — для постоянного IP (контейнер DuckDNS не запускается). Для динамического IP — без флага и с
+`export DUCKDNS_TOKEN=...`.
 
-### Configuring your domain
+### Режимы адреса (`--address-mode`)
 
-Your system is now ready to proceed with installation, but before we continue, you should configure your domain.
+| Режим | Адрес | TLS | Заметки |
+| --- | --- | --- | --- |
+| `duckdns` (по умолчанию) | `<name>.duckdns.org` | Let's Encrypt | профиль `duckdns`, если не `--no-ddns` |
+| `sslip` | `<ip-через-дефисы>.sslip.io` из `--server-ip` | Let's Encrypt | лимит LE общий со всеми пользователями sslip.io |
+| `domain` | свой домен | Let's Encrypt | |
+| `ip` | голый IPv4 | LE `shortlived` | **не проверено** |
+| `lan` | `durio.lan` / локальный IP | `tls internal` | только разработка, требует `--dev` |
 
-![Cloudflare DNS configuration](.github/guide/cloudflare-dns.webp)
+**Смена адреса = все пользователи заново добавляют аккаунт.** Поэтому адрес выбирают один раз; смена —
+`generate_config.sh --overwrite --confirm-address-change` и рестарт всех сервисов. `data/caddy-data`
+(аккаунт ACME и сертификаты) при переустановке сохранять — иначе можно упереться в лимиты Let's Encrypt.
+`--behind-proxy` — Caddy слушает `:80` за другим TLS-прокси.
 
-Your domain (or a subdomain) should point to the server's IP (A and AAAA records) or CNAME to the hostname provided.
+### Хранилище файлов (`--storage`)
 
-### Install required dependencies
+| | MinIO (по умолчанию) | MinIO на отдельном диске / NAS | Внешний S3 |
+| --- | --- | --- | --- |
+| Настройка | ничего | `--minio-data-path /mnt/files/minio` | `--storage s3 --s3-endpoint … --s3-region … --s3-bucket …` + `S3_ACCESS_KEY_ID`/`S3_SECRET_ACCESS_KEY` в env |
+| Бэкап | `mc mirror` | `mc mirror` | версионирование бакета у провайдера |
 
+Файлы шифрует autumn до записи — провайдер видит шифротекст. Переезд между хранилищами:
+`scripts/migrate-storage.sh --to s3|minio …` (зеркалирование, остановка autumn, дельта, сверка, переключение;
+старое хранилище не удаляется).
+
+## Конфигурация
+
+- Ручные настройки — `Revolt.overrides.toml` (генератор его не трогает): `invite_only = true`,
+  `trust_cloudflare = true` (Caddy передаёт реальный IP клиента в `CF-Connecting-IP`), `[features.e2ee]`.
+  SMTP: `[api.smtp]` в overrides, пароль — `REVOLT__API__SMTP__PASSWORD` в `secrets.env`.
+- Конфиг читается при старте: после правок — рестарт **всех** бэкенд-сервисов:
+  `scripts/compose up -d --force-recreate api events autumn january crond pushd voice-ingress`.
+- `production = false` всегда (при `true` бэкенд шлёт письма с брендом Stoat и включает Discover).
+- **E2EE:** `[features.e2ee] enabled = true` — только когда все сервисы и клиенты на версии с E2EE.
+  Выключать в проде нельзя: зашифрованные чаты станут «только для чтения».
+- Инвайт: `scripts/compose exec database mongosh -u root -p --authenticationDatabase admin revolt --eval
+  'db.account_invites.insertOne({_id: "<код>"})'`, код — `openssl rand -hex 8`.
+- Push (FCM): `generate_config.sh --overwrite --fcm-json service-account.json`.
+
+## Обновление
 
 ```bash
-# ensure Git is installed
-apt-get update
-apt-get install ca-certificates curl git micro
+scripts/upgrade.sh 0.16.0-fork.N [--pin-digests]
 ```
 
-> [!NOTE]
-> Installing docker is different per platform and this guide only covers installing on Ubuntu Server. You can find more about installing docker on other platforms [here](https://docs.docker.com/engine/install/).
+preflight → **всегда** локальный `mongodump --oplog` в `backups/pre-upgrade/` (хранятся 3 последних) →
+полный бэкап, если включён → `pull` → новые `migrations/*.sh` → `api` (миграции БД) → остальные → `smoke.sh`.
+При сбое без миграций БД — автоматический откат тега; если миграции прошли — сервисы останавливаются и
+печатается команда восстановления (`scripts/restore.sh --from-archive …`). Журнал — `logs/`.
+
+## Бэкапы
+
+Скрипты готовы, но **выключены**. Включение — одной командой (root), когда будет цель:
 
 ```bash
-# install docker
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-chmod a+r /etc/apt/keyrings/docker.asc
-
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-apt-get update
-apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+scripts/backup-enable.sh --target local:/srv/backup [--hc-url https://hc-ping.com/<uuid>]
+# позже: --target s3:https://<endpoint>/<bucket>  или  --target rclone:<remote>:<path>
+scripts/backup-enable.sh --disable
 ```
 
-## Configuration
+restic (шифрование, дедупликация, 7 дневных / 4 недельных / 6 месячных), systemd-таймер 03:30 UTC.
+Состав: дамп Mongo, зеркало бакета MinIO, `secrets.env`, `.env`, конфиги, `data/caddy-data`. Пароль restic —
+сохранить вне сервера. Локальная цель спасает от ошибок, но не от потери диска. Восстановление —
+`scripts/restore.sh` (`--dry-run` для проверки). Пока бэкапов нет — снапшоты VPS у хостера вручную.
 
-Now, we can pull in the configuration for Stoat:
+## Разработка репозитория
 
-```bash
-git clone https://github.com/stoatchat/self-hosted stoat
-cd stoat
-```
+- CI (`.github/workflows/ci.yml`): shellcheck, `scripts/check-no-ip.sh`, и для каждой пары режим × хранилище —
+  `scripts/ci/test-config.sh` (генерация, `docker compose config -q`, `check-ports.sh`, `caddy validate`,
+  проверки `--overwrite`).
+- IP сервера никогда не коммитим: только `.env`. Хук: `git config core.hooksPath .githooks`. Разрешены
+  `*.example`, частные и документационные диапазоны, строки с пометкой `ip-check: allow`.
+- `migrations/<YYYYMMDD>-<что>.sh` — идемпотентные ручные шаги, выполняет `upgrade.sh`
+  (учёт в `data/.applied-migrations`). `migrations/upstream/` — история upstream, не выполняется.
 
-Generate a configuration file by running:
+## Исходный код (AGPL-3.0)
 
-```bash
-chmod +x ./generate_config.sh
-./generate_config.sh your.domain
-```
+[durio-chat](https://github.com/DakarXYZ/durio-chat) (сервер) ·
+[durio-self-hosted](https://github.com/DakarXYZ/durio-self-hosted) ·
+[durio-for-android](https://github.com/DakarXYZ/durio-for-android) ·
+[durio-for-desktop](https://github.com/DakarXYZ/durio-for-desktop) ·
+[durio-for-web](https://github.com/DakarXYZ/durio-for-web) ·
+[durio-javascript-client-sdk](https://github.com/DakarXYZ/durio-javascript-client-sdk)
 
-The generate_config.sh script will create the neccessary secrets required to create a Stoat instance, and the secrets will be inserted into a file named `secrets.env`. You should back up this file, as losing it may result in you losing access to all files on your Stoat instance.
-
-You can find [more options here](https://github.com/stoatchat/stoatchat/blob/main/crates/core/config/Revolt.toml), some noteworthy configuration options:
-
-- Email verification
-- Captcha
-- A custom S3 server
-- iOS & Android notifications (Requires Apple/Google developer accounts)
-
-If you'd like to edit the configuration, just run:
-
-```bash
-micro Revolt.toml
-```
-
-Finally, we can start up Stoat. First, run it in the foreground with:
-
-```bash
-docker compose up
-```
-
-If it runs without any critical errors, you can stop it with <kbd>Ctrl</kbd> + <kbd>C</kbd> and run it detached (in the background) by appending `-d`.
-
-```bash
-docker compose up -d
-```
-
-## Updating
-
-Before updating, ensure you consult the notices at the top of this README, **as well as** [the notices](#notices) at the bottom, to check if there are any important changes to be aware of.
-
-Pull the latest version of this repository:
-
-```bash
-git pull
-```
-
-Ensure that your secrets in `Revolt.toml` and `secrets.env` match. If your secrets don't match, copy the secrets from `Revolt.toml` to `secrets.env`. The following step will **overwrite** your existing configuration. If you have custom configuration settings you will need to copy them over afterwards. Alternatively, you can forgo running the configurator, but you may miss out on new features.
-
-Run the configuration script with your domain and pass the overwrite flag:
-
-```bash
-./generate_config.sh --overwrite your.domain
-```
-
-Then pull all the latest images:
-
-```bash
-docker compose pull
-```
-
-Then restart the services:
-
-```bash
-docker compose up -d
-```
-
-## Additional Notes
-
-### Placing Behind Another Reverse-Proxy or Another Port
-
-During configuration using `generate_config.sh` you will be asked if you'd like to place Stoat behind another reverse proxy. Enter `y` to configure for reverse proxy. This will expose your caddy on port 8880, and you can reverse proxy to <http://localhost:8880>
-
-See [guides](Guides.md) for more information about placing Stoat behind other reverse proxies.
-
-### Insecurely Expose the Database
-
-You can insecurely expose the database by adding a port definition:
-
-```yml
-# compose.override.yml
-services:
-  database:
-    ports:
-      - "27017:27017"
-```
-
-Docker will bypass your ufw rules when you do this. This means that if the port is open, the database will be publically accessible and anyone will be able to modify it.
-
-### Mongo Compatibility
-
-Older processors may not support the latest MongoDB version; you may pin to MongoDB 4.4 and update the healthcheck as such:
-
-```yml
-# compose.override.yml
-services:
-  database:
-    image: mongo:4.4
-    . . .
-    healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongo localhost:27017/test --quiet
-      . . .
-```
-
-### KeyDB Compatibility
-
-Some systems (including ARM systems) may not support the latest KeyDB version; you may use redis or valkey instead as such:
-
-```yml
-# compose.override.yml
-services:
-  redis:
-    image: valkey/valkey:8
-```
-
-### Why ports 7881 and 50000-50100/udp aren't in the Caddyfile
-
-Livekit requires ports 7881/tcp and 50000-50100/udp to be openly accessible on the internet. These ports are used for the RTC protocol. Caddy does not support RTC without significant configuration changes that are out of scope of this repo.
-
-### Getting kicked on video enabled instances when turning on video
-
-Due to an incomplete implementation, Stoat will kick any user that attempts to stream a video that is larger than the maximum size defined in `Revolt.toml`. If you would like to increase the maximum size allowed on your Stoat instance, you can do so by modifying the `video_resolution` field under `[features.limits.new_user]` and `[features.limits.default]` to a larger value in your `Revolt.toml`. For example, 4k would be : `[3996, 2160]`.
-
-## Notices
-
-<details>
-<summary>If you deployed Stoat before October 5, 2025...</summary>
-
-> If you deployed Stoat before [2022-10-29](https://github.com/minio/docs/issues/624#issuecomment-1296608406), you may have to tag the `minio` image release if it's configured in "fs" mode.
->
-> ```yml
-> image: minio/minio:RELEASE.2022-10-24T18-35-07Z
-> ```
-
-> If you deployed Stoat before [2023-04-21](https://github.com/stoatchat/stoatchat/commit/32542a822e3de0fc8cc7b29af46c54a9284ee2de), you may have to flush your Redis database.
->
-> ```bash
-> # for stock Redis and older KeyDB images:
-> docker compose exec redis redis-cli
-> # ...or for newer KeyDB images:
-> docker compose exec redis keydb-cli
->
-> # then run:
-> FLUSHDB
-> ```
-
-> As of 30th September 2024, Autumn has undergone a major refactor, which requires a manual migration.
->
-> To begin, add a temporary container that we can work from:
->
-> ```yml
-> # compose.override.yml
-> services:
->   migration:
->     image: node:21
->     volumes:
->       - ./migrations:/cwd
->     command: "bash -c 'while true; do sleep 86400; done'"
-> ```
->
-> Then switch to the shell:
->
-> ```bash
-> docker compose up -d database migration
-> docker compose exec migration bash
-> ```
->
-> Now we can run the migration:
->
-> ```bash
-> cd /cwd
-> npm i mongodb
-> node ./20240929-autumn-rewrite.mjs
-> ```
-
-> As of November 28, 2024, the following breaking changes have been applied:
->
-> - Rename config section `api.vapid` -> `pushd.vapid`
-> - Rename config section `api.fcm` -> `pushd.fcm`
-> - Rename config section `api.apn` -> `pushd.apn`
->
-> These will NOT automatically be applied to your config and must be changed/added manually.
->
-> The following components have been added to the compose file:
->
-> - Added `rabbit` (RabbitMQ) and `pushd` (Stoat push daemon)
-
-> As of October 5, 2025, the following breaking changes have been applied:
->
-> - Rename docker compose project from revolt to stoat
->
-> These will NOT automatically be applied to your environment.
->
-> You must run the environment with the old revolt name to apply the update. After you run `docker compose pull` during the upgrade procedure, you must run `docker compose -p revolt down`. You may then continue with the upgrade procedure.
-</details>
-
-<br />
-
-> [!IMPORTANT]
-> As of February 28, 2026, the configuration script will load secrets into `secrets.env`. You must copy your existing secrets into secrets.env to prevent `generate_config.sh` from overwriting your secrets. If your secrets are overwritten you will lose access to all files on your Stoat instance.
->
-> Copy secrets.env.example to secrets.env
->
-> ```bash
-> cp secrets.env.example secrets.env
-> ```
->
-> Begin the process of copying  your secrets to secrets.env. You can view where each secret is located by reading the `secrets.env` file. Open the file with micro and read the instructions.
->
-> ```bash
-> micro secrets.env
-> ```
->
-> All of your secrets can be found in `Revolt.toml` and should be copied to your `secrets.env` file. After all 5 secrets are copied over, you are safe to run `generate_config.sh` to get new configuration options.
-
-> [!IMPORTANT]
-> If you deployed Stoat before September 17th 2026 your minio environment will automatically migrate to silo. Stoat maintainers recommend backing up your minio directory. In the default configuration, this directory is at `data/minio`.
->
-> ```bash
-> sudo cp data/minio data/minio-bak
-> ```
-
-## Security Advisories
-
-You can find information about security advisories on Stoat repositories on Github. Listed below are the latest versions that contain remediations, and links to the security advisory pages.
-
-- backend - 0.15.0 - [stoatchat/stoatchat](https://github.com/stoatchat/stoatchat/security/advisories)
-- for-web - 0.14.1 - [stoatchat/for-web](https://github.com/stoatchat/for-web/security/advisories)
+Лицензия — [AGPL-3.0](LICENSE), как у upstream.

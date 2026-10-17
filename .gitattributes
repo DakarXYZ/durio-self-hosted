@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.sh text eol=lf
+.githooks/* text eol=lf
+scripts/compose text eol=lf
+*.webp binary
+*.png binary

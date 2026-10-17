@@ -1,0 +1,5 @@
+{
+  "log-driver": "local",
+  "live-restore": true,
+  "userland-proxy": false
+}

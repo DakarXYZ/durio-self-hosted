@@ -6,6 +6,8 @@ on:
 
 jobs:
   track_issue:
+    # upstream project board only; does nothing in forks (dur.io)
+    if: github.repository_owner == 'stoatchat'
     runs-on: ubuntu-latest
     steps:
       - name: Get project data
