@@ -115,7 +115,10 @@ scripts/smoke.sh --expect-version 0.16.0+fork.N
   `scripts/compose up -d --force-recreate api events autumn january crond pushd voice-ingress`.
 - `production = false` всегда (при `true` бэкенд шлёт письма с брендом Stoat и включает Discover).
 - **E2EE:** `[features.e2ee] enabled = true` — только когда все сервисы и клиенты на версии с E2EE.
-  Выключать в проде нельзя: зашифрованные чаты станут «только для чтения».
+  Выключать в проде нельзя: зашифрованные чаты станут «только для чтения». После включения — рестарт всех
+  бэкенд-сервисов (команда выше). Миграция БД 56 (коллекции `e2ee_*`) применяется сама при старте api.
+  Не задавать `REDIS_PAYLOAD_TYPE=bincode`: E2EE-события в этом формате bonfire не декодирует. Caddy тело запроса
+  не ограничивает; лимит JSON у api — 4 МиБ (`max_request_bytes`), `scripts/smoke.sh` проверяет, что 3 МиБ доходят.
 - Инвайт: `scripts/compose exec database mongosh -u root -p --authenticationDatabase admin revolt --eval
   'db.account_invites.insertOne({_id: "<код>"})'`, код — `openssl rand -hex 8`.
 - Push (FCM): `generate_config.sh --overwrite --fcm-json service-account.json`.
