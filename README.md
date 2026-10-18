@@ -23,7 +23,8 @@
 | livekit | `livekit-server` | голос и видео |
 | duckdns | `linuxserver/duckdns` | профиль `duckdns`: обновление IP |
 
-Браузерного клиента нет: на `/` — страница со ссылками на приложения и исходники (`config/site/`).
+Браузерного клиента нет: на `/` — страница со ссылками на приложения и исходники (`config/site/`), на
+`/e2ee.html` (`/e2ee-en.html`) — памятка пользователю о сквозном шифровании.
 Наружу открыты только `caddy` (80, 443/tcp+udp) и `livekit` (7881/tcp, 7882/udp) — см.
 [docs/host-security.md](docs/host-security.md).
 

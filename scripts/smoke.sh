@@ -42,6 +42,7 @@ check_code() { # PATH EXPECTED_CODE [extra curl args...]
 }
 
 check_code / 200
+check_code /e2ee.html 200
 check_code /ingress 404
 check_code /ingress/worldwide 404
 check_code /autumn/ 200

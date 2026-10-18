@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>End-to-end encryption — dur.io</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <p class="crumbs"><a href="/">dur.io</a> · <a href="/e2ee.html" hreflang="ru" lang="ru">Русский</a> (full version)</p>
+  <h1>End-to-end encryption (beta)</h1>
+
+  <p class="callout"><strong>Beta.</strong> There has been no external security audit, only an internal review.
+    The cryptography itself is not ours: Olm and Megolm (as in Matrix/Element) via the open-source vodozemac and
+    matrix-sdk-crypto libraries.</p>
+
+  <h2>What is encrypted</h2>
+  <ul>
+    <li>Only <strong>direct messages and groups</strong> where end-to-end encryption is switched on. Server
+      (community) channels are never encrypted.</li>
+    <li>Any member can switch it on in the chat details (a group owner may keep that right to themselves).
+      <strong>It cannot be switched off.</strong> Text, edits and files (including names and previews) are
+      encrypted.</li>
+    <li>For now new DMs are not encrypted automatically; this becomes the default later. Groups stay manual.</li>
+    <li>Encryption is available in the Android app. The Windows app gets it later and until then shows
+      “Encrypted message. Update the app.”</li>
+  </ul>
+
+  <h2>What the server sees</h2>
+  <p>The server cannot read encrypted messages or files; plain text and private keys never leave your devices. It
+    does see <strong>metadata</strong>: who talks to whom, when and how much, message sizes, reactions, replies, pins,
+    group members, system messages, the number and sizes of files, your devices and their public keys.
+    <strong>Calls and video are not end-to-end encrypted.</strong></p>
+
+  <h2>Devices and emoji verification</h2>
+  <p>Every login is a device (Settings → Devices and encryption). “Verify” shows 7 emoji on both screens: compare
+    them in person or over a call. Verify your contacts and your <strong>own</strong> devices — only a verified own
+    device hands your old message keys to a new one.</p>
+
+  <h2>Recovery key and key backup</h2>
+  <p>Your message keys can be backed up on the server, encrypted with your <strong>recovery key</strong>; the server
+    cannot read the backup. The key is shown <strong>once</strong>. <strong>A lost recovery key cannot be recovered
+    by anyone</strong>, not even the administrator.</p>
+
+  <h2>Key files</h2>
+  <p>“Export keys” saves keys to a file protected by a passphrase. <strong>The passphrase cannot be
+    recovered</strong>, and <strong>the file plus the passphrase reads every chat it contains</strong> — keep both
+    safe and never share them.</p>
+
+  <h2>Limits</h2>
+  <ul>
+    <li>No message search (pins work), no link previews, no server-side file previews.</li>
+    <li>Calls are not end-to-end encrypted. No bots or webhooks in encrypted groups.</li>
+    <li>Push notifications carry no text: the phone decrypts on its own, otherwise it shows “New message from …”.</li>
+    <li>New group members do not see older messages; a new device does not see them until verified or restored.</li>
+  </ul>
+
+  <h2>What to do</h2>
+  <ul>
+    <li><strong>New phone:</strong> keep the old one logged in, log in on the new one and verify it with the old one
+      or restore with the recovery key. Without both, old encrypted messages are lost; new ones work.</li>
+    <li><strong>Lost phone:</strong> from another device (or the new phone) open Devices and encryption and log the
+      lost one out, change your password, restore history with the recovery key.</li>
+    <li><strong>“Update the app”:</strong> install the latest Android version. If the app says its encryption data
+      was saved by a newer version, update — do not reset encryption.</li>
+  </ul>
+
+  <h2>Diagnostic report</h2>
+  <p>Devices and encryption → Diagnostics → Send diagnostic report: counters, states and error codes, app and
+    Android versions, CPU type and number of accounts. No messages, keys, server address or other people’s IDs. You
+    see the whole report before you choose where to send it.</p>
+
+  <footer>dur.io is based on the open-source <a href="https://github.com/stoatchat">Stoat</a> project and is not
+    affiliated with it. © DakarX</footer>
+</main>
+</body>
+</html>
