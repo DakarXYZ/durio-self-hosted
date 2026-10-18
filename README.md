@@ -114,16 +114,35 @@ scripts/smoke.sh --expect-version 0.16.0+fork.N
 - Конфиг читается при старте: после правок — рестарт **всех** бэкенд-сервисов:
   `scripts/compose up -d --force-recreate api events autumn january crond pushd voice-ingress`.
 - `production = false` всегда (при `true` бэкенд шлёт письма с брендом Stoat и включает Discover).
-- **E2EE:** `[features.e2ee] enabled = true` — только когда все сервисы и клиенты на версии с E2EE.
-  Выключать в проде нельзя: зашифрованные чаты станут «только для чтения». После включения — рестарт всех
-  бэкенд-сервисов (команда выше). Миграция БД 56 (коллекции `e2ee_*`) применяется сама при старте api.
-  Не задавать `REDIS_PAYLOAD_TYPE=bincode`: E2EE-события в этом формате bonfire не декодирует. Caddy тело запроса
-  не ограничивает; лимит JSON у api — 4 МиБ (`max_request_bytes`), `scripts/smoke.sh` проверяет, что 3 МиБ доходят.
+- **E2EE:** включается только скриптом `scripts/e2ee-enable.sh` и только когда все сервисы и клиенты на версии с
+  E2EE; **выключать нельзя** — см. [Сквозное шифрование (E2EE)](#сквозное-шифрование-e2ee).
 - Инвайт: `scripts/compose exec database mongosh -u root -p --authenticationDatabase admin revolt --eval
   'db.account_invites.insertOne({_id: "<код>"})'`, код — `openssl rand -hex 8`.
 - Push (FCM): `generate_config.sh --overwrite --fcm-json service-account.json`.
 
-## Обновление
+## Сквозное шифрование (E2EE)
+
+> [!IMPORTANT]
+> **Notice (0.16.0-fork.N с E2EE):** после обновления до версии с E2EE шифрование остаётся выключенным. Включать —
+> `scripts/e2ee-enable.sh`, когда клиенты с E2EE уже выпущены. **Обратно не выключается.**
+
+```bash
+scripts/e2ee-enable.sh --check                 # состояние: overrides, GET /api/, отметка data/.e2ee-enabled
+scripts/e2ee-enable.sh                         # включить (спросит подтверждение; --yes — без вопроса)
+scripts/e2ee-enable.sh --default-for-new-dms   # через 1–2 месяца (O6): новые ЛС шифруются сразу
+```
+
+Скрипт идемпотентен: проверяет, что `GET /api/` отдаёт `features.e2ee` и нашу версию, что все бэкенд-контейнеры
+запущены из образа тега `APP_TAG` (тот же тег и тот же образ после `pull`), пишет `enabled = true` в секцию
+`[features.e2ee]` файла `Revolt.overrides.toml` (остальное не трогает; ключи в другом виде или
+`REVOLT__FEATURES__E2EE__*` в env — отказ), перезапускает **все** бэкенд-сервисы, проверяет `GET /api/` →
+`features.e2ee.enabled = true` и ставит отметку `data/.e2ee-enabled`. С отметкой `scripts/smoke.sh` (и значит
+`upgrade.sh`) падает, если E2EE снова выключено. `--no-restart` только правит файл (без проверок и рестарта).
+
+Миграция БД 56 (коллекции `e2ee_*`) применяется сама при старте api. Не задавать `REDIS_PAYLOAD_TYPE=bincode`:
+E2EE-события в этом формате bonfire не декодирует. Caddy тело запроса не ограничивает; лимит JSON у api — 4 МиБ
+(`max_request_bytes`), `scripts/smoke.sh` проверяет, что 3 МиБ доходят.
+
 
 ```bash
 scripts/upgrade.sh 0.16.0-fork.N [--pin-digests]

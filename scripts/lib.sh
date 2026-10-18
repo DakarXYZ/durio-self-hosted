@@ -87,6 +87,22 @@ compose() {
     docker compose "${args[@]}" "$@"
 }
 
+# public_curl_opts DOMAIN LOCAL — fill the global CURL_OPTS array for requests to https://DOMAIN.
+# LOCAL=1 resolves DOMAIN to 127.0.0.1 (on the server itself); in lan mode Caddy's local CA is trusted.
+public_curl_opts() {
+    local domain=$1 local_=$2 ca="$ROOT/data/caddy-data/caddy/pki/authorities/local/root.crt"
+    CURL_OPTS=(-sS --max-time 15)
+    [[ $local_ -eq 1 ]] && CURL_OPTS+=(--resolve "$domain:443:127.0.0.1" --resolve "$domain:80:127.0.0.1")
+    if [[ $(env_get ADDRESS_MODE "$ENV_FILE") == lan && -f $ca ]]; then
+        CURL_OPTS+=(--cacert "$ca")
+    fi
+    return 0
+}
+
+# Marker of a server where E2EE was switched on (scripts/e2ee-enable.sh): never switch it off again.
+# shellcheck disable=SC2034
+E2EE_MARKER="$ROOT/data/.e2ee-enabled"
+
 require_config() {
     [[ -f $ENV_FILE && -f $SECRETS_FILE ]] ||
         die ".env / secrets.env not found in $ROOT — run scripts/generate_config.sh first"

@@ -24,12 +24,8 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n $DOMAIN ]] || die "no domain (.env STOAT_DOMAIN or --domain)"
 
-curl_opts=(-sS --max-time 15)
-[[ $LOCAL -eq 1 ]] && curl_opts+=(--resolve "$DOMAIN:443:127.0.0.1" --resolve "$DOMAIN:80:127.0.0.1")
-ca="$ROOT/data/caddy-data/caddy/pki/authorities/local/root.crt"
-if [[ $(env_get ADDRESS_MODE "$ENV_FILE") == lan && -f $ca ]]; then
-    curl_opts+=(--cacert "$ca")
-fi
+public_curl_opts "$DOMAIN" "$LOCAL"
+curl_opts=("${CURL_OPTS[@]}")
 base="https://$DOMAIN"
 failed=0
 
@@ -69,6 +65,16 @@ elif [[ -n $EXPECT && $version != "$EXPECT" ]]; then
     failed=1
 else
     echo "ok   /api/ -> revolt $version"
+fi
+
+# E2EE (SH-13): once switched on with scripts/e2ee-enable.sh it must stay on (Q59).
+e2ee=$(jq -r '.features.e2ee | if type == "object" and has("enabled") then .enabled | tostring else "absent" end' \
+    <<<"$root" 2>/dev/null || echo absent)
+if [[ -f $E2EE_MARKER && $e2ee != true ]]; then
+    echo "FAIL /api/ -> e2ee $e2ee, but E2EE was enabled here ($E2EE_MARKER): never disable it, run scripts/e2ee-enable.sh"
+    failed=1
+else
+    echo "ok   /api/ -> e2ee enabled: $e2ee"
 fi
 
 # A 3 MiB body must reach the API, i.e. Caddy must not cut it. Rocket itself rejects JSON bodies

@@ -3,6 +3,7 @@
 # copy of the repo, then check it:
 #   generate_config.sh -> docker compose config -q -> check-ports.sh -> caddy validate
 #   -> re-run without --overwrite must fail -> --overwrite keeps secrets.env and overrides byte-for-byte
+#   -> e2ee-enable.sh --no-restart edits only [features.e2ee], is idempotent, refuses --disable
 #
 # Usage: scripts/ci/test-config.sh <duckdns|duckdns-noddns|sslip|domain|ip|lan|behind-proxy> <minio|s3>
 # Uses only test values (documentation IP range, fake tokens). Needs docker, jq, openssl.
@@ -92,6 +93,29 @@ cp "$work/Revolt.overrides.toml" "$work/overrides.before"
 "$work/scripts/generate_config.sh" "${args[@]}" --overwrite >/dev/null
 cmp -s "$work/secrets.env" "$work/secrets.before" || die "--overwrite changed secrets.env"
 cmp -s "$work/Revolt.overrides.toml" "$work/overrides.before" || die "--overwrite changed Revolt.overrides.toml"
+"$work/scripts/compose" config -q
+
+info "[$MODE/$STORAGE] e2ee-enable.sh --no-restart: one line changes, idempotent, no way back"
+"$work/scripts/e2ee-enable.sh" --no-restart --yes >/dev/null 2>&1
+sed 's/^enabled = false$/enabled = true/' "$work/overrides.before" | cmp -s - "$work/Revolt.overrides.toml" ||
+    die "e2ee-enable.sh changed more than [features.e2ee] enabled"
+cp "$work/Revolt.overrides.toml" "$work/overrides.enabled"
+"$work/scripts/e2ee-enable.sh" --no-restart --yes >/dev/null 2>&1
+cmp -s "$work/Revolt.overrides.toml" "$work/overrides.enabled" || die "e2ee-enable.sh is not idempotent"
+if "$work/scripts/e2ee-enable.sh" --disable >/dev/null 2>&1; then
+    die "e2ee-enable.sh --disable must refuse"
+fi
+"$work/scripts/e2ee-enable.sh" --default-for-new-dms --no-restart --yes >/dev/null 2>&1
+if command -v python3 >/dev/null 2>&1; then
+    python3 - "$work/Revolt.overrides.toml" <<'EOF' || die "Revolt.overrides.toml after e2ee-enable.sh is not the expected TOML"
+import sys, tomllib
+e2ee = tomllib.load(open(sys.argv[1], "rb"))["features"]["e2ee"]
+assert e2ee == {"enabled": True, "default_for_new_dms": True}, e2ee
+EOF
+fi
+cp "$work/Revolt.overrides.toml" "$work/overrides.before"
+"$work/scripts/generate_config.sh" "${args[@]}" --overwrite >/dev/null
+cmp -s "$work/Revolt.overrides.toml" "$work/overrides.before" || die "--overwrite changed the E2EE settings"
 "$work/scripts/compose" config -q
 
 echo "test-config: OK ($MODE/$STORAGE)"

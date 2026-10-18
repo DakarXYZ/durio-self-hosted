@@ -581,7 +581,7 @@ invite_only = true
 trust_cloudflare = true
 
 [features.e2ee]
-# Enable only when every service and client runs an E2EE-capable version.
+# Enable only when every service and client runs an E2EE-capable version: scripts/e2ee-enable.sh
 # Never switch it off again in production: encrypted chats become read-only.
 enabled = false
 EOF
