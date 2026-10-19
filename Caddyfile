@@ -44,11 +44,11 @@
 		file_server
 	}
 
-	# Invite links from the app, https://<domain>/invite/<code>: one static page for every code,
-	# invite.js reads the code from the address (the only page with scripts, all same-origin).
-	handle /invite/* {
+	# Invite links from the app, https://<domain>/join/<code>: one static page for every code,
+	# join.js reads the code from the address (the only page with scripts, all same-origin).
+	handle /join/* {
 		root * /srv/site
-		rewrite * /invite.html
+		rewrite * /join.html
 		header Content-Security-Policy "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'"
 		header X-Frame-Options DENY
 		header Cache-Control "no-store"

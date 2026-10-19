@@ -1,13 +1,13 @@
-// Invite page (/invite/<code>): shows the server address and the code, copy buttons.
+// Invite page (/join/<code>): shows the server address and the code, copy buttons.
 // Served under CSP script-src 'self': no inline code, no third-party scripts, text only via textContent.
 "use strict";
 
 document.addEventListener("DOMContentLoaded", function () {
-  var match = /^\/invite\/([A-Za-z0-9_-]{1,128})\/?$/.exec(location.pathname);
+  var match = /^\/join\/([A-Za-z0-9_-]{1,128})\/?$/.exec(location.pathname);
   var values = {
     server: location.host,
     code: match ? match[1] : "",
-    link: match ? location.origin + "/invite/" + match[1] : ""
+    link: match ? location.origin + "/join/" + match[1] : ""
   };
 
   function each(selector, fn) {
