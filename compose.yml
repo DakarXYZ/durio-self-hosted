@@ -276,10 +276,11 @@ services:
     healthcheck:
       <<: *healthcheck
       test: ["CMD", "/usr/local/bin/healthcheck", "http", "127.0.0.1:14704", "/"]
+    # Files are held in memory while encrypted (100 MB uploads, MAX_FILE_SIZE_MB) plus a 512 MiB cache.
     deploy:
       resources:
         limits:
-          memory: 768M
+          memory: 1536M
 
   # Metadata and image proxy.
   january:

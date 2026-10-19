@@ -2,7 +2,7 @@
 # CI: generate a throw-away configuration for one address mode × storage combination in a temp
 # copy of the repo, then check it:
 #   generate_config.sh -> docker compose config -q -> check-ports.sh -> caddy validate
-#   -> re-run without --overwrite must fail -> --overwrite keeps secrets.env and overrides byte-for-byte
+#   -> upload size / admins / hCaptcha in Revolt.toml -> re-run without --overwrite must fail -> --overwrite keeps secrets.env and overrides byte-for-byte
 #   -> e2ee-enable.sh --no-restart edits only [features.e2ee], is idempotent, refuses --disable
 #
 # Usage: scripts/ci/test-config.sh <duckdns|duckdns-noddns|sslip|domain|ip|lan|behind-proxy> <minio|s3>
@@ -81,6 +81,40 @@ docker start -a "durio-caddy-validate-$$" >"$work/caddy.log" 2>&1 || {
     cat "$work/caddy.log" >&2
     die "caddy validate failed"
 }
+
+info "[$MODE/$STORAGE] Revolt.toml: upload size, admins, hCaptcha off"
+toml_check() { # EXPECTED_BYTES EXPECTED_ADMINS_JSON
+    command -v python3 >/dev/null 2>&1 || return 0
+    python3 - "$work/Revolt.toml" "$1" "$2" <<'EOF' || die "Revolt.toml: unexpected upload size, admins or captcha"
+import json, sys, tomllib
+c = tomllib.load(open(sys.argv[1], "rb"))
+size, admins = int(sys.argv[2]), json.loads(sys.argv[3])
+limits = c["features"]["limits"]
+for group in ("new_user", "default"):
+    assert limits[group]["file_upload_size_limit"]["attachments"] == size, group
+assert limits["global"]["body_limit_size"] > size
+assert c["api"]["admins"]["users"] == admins, c["api"]["admins"]
+assert c["api"]["security"]["captcha"] == {"hcaptcha_key": "", "hcaptcha_sitekey": ""}
+EOF
+}
+toml_check 100000000 '[]'
+admin_id=01ARZ3NDEKTSV4RRFFQ69G5FAV
+"$work/scripts/generate_config.sh" "${args[@]}" --overwrite --max-file-size 250 --admins "${admin_id,,}" >/dev/null
+toml_check 250000000 "[\"$admin_id\"]"
+[[ $(env_get ADMIN_USER_IDS "$work/.env") == "$admin_id" ]] || die "ADMIN_USER_IDS not kept in .env"
+"$work/scripts/generate_config.sh" "${args[@]}" --overwrite >/dev/null
+toml_check 250000000 "[\"$admin_id\"]"
+"$work/scripts/generate_config.sh" "${args[@]}" --overwrite --max-file-size 100 --admins '' >/dev/null
+toml_check 100000000 '[]'
+if "$work/scripts/generate_config.sh" "${args[@]}" --overwrite --admins not-an-id >/dev/null 2>&1; then
+    die "generator accepted an invalid admin id"
+fi
+cp "$work/Revolt.overrides.toml" "$work/overrides.captcha"
+printf '\n[api.security.captcha]\nhcaptcha_key = "0x123"\n' >>"$work/Revolt.overrides.toml"
+if "$work/scripts/generate_config.sh" "${args[@]}" --overwrite >/dev/null 2>&1; then
+    die "generator accepted an hCaptcha key in Revolt.overrides.toml"
+fi
+cp "$work/overrides.captcha" "$work/Revolt.overrides.toml"
 
 info "[$MODE/$STORAGE] re-run without --overwrite must refuse"
 if "$work/scripts/generate_config.sh" "${args[@]}" >/dev/null 2>&1; then

@@ -35,7 +35,10 @@ Storage (SH-21):
 Other:
   --name NAME             display name in /.well-known/stoat (default dur.io)
   --acme-email EMAIL      Let's Encrypt account email
-  --video | --no-video    camera / screen sharing limits (default: video on)
+  --video | --no-video    camera / screen sharing limits (default: video on, up to 1920x1080)
+  --max-file-size MB      attachment size limit in MB (default 100); the upload body limit follows
+  --admins ID[,ID...]     user ids of instance admins: they end sessions of any user from the
+                          client (lost phone); an empty value removes all
   --fcm-json FILE         Firebase service account JSON -> REVOLT__PUSHD__FCM__* in secrets.env
   --app-tag TAG           image tag (default: current .env value or the release this repo targets)
   --image-registry PFX    image prefix (default ghcr.io/dakarxyz/); empty for locally built images
@@ -54,7 +57,8 @@ EOF
 
 ARG_MODE='' ARG_ADDRESS='' ARG_SERVER_IP='' ARG_NAME='' ARG_EMAIL='' ARG_STORAGE='' ARG_MINIO_PATH=''
 ARG_S3_ENDPOINT='' ARG_S3_REGION='' ARG_S3_BUCKET='' ARG_S3_PATH_STYLE='' ARG_APP_TAG='' ARG_VIDEO=''
-ARG_BEHIND_PROXY='' ARG_DDNS='' ARG_FCM_JSON=''
+ARG_BEHIND_PROXY='' ARG_DDNS='' ARG_FCM_JSON='' ARG_MAX_FILE_MB=''
+ARG_ADMINS_SET=0 ARG_ADMINS=
 ARG_IMAGE_REGISTRY_SET=0 ARG_IMAGE_REGISTRY=
 DEV=0 OVERWRITE=0 CONFIRM_ADDRESS_CHANGE=0 YES=0 SKIP_S3_CHECK=0
 
@@ -89,6 +93,8 @@ while [[ $# -gt 0 ]]; do
         --local-images) ARG_IMAGE_REGISTRY_SET=1; ARG_IMAGE_REGISTRY=; ARG_APP_TAG=local ;;
         --video) ARG_VIDEO=true ;;
         --no-video) ARG_VIDEO=false ;;
+        --max-file-size) need_value "$@"; ARG_MAX_FILE_MB=$2; shift ;;
+        --admins) [[ $# -ge 2 ]] || die "option $1 needs a value"; ARG_ADMINS_SET=1; ARG_ADMINS=$2; shift ;;
         --behind-proxy) ARG_BEHIND_PROXY=true ;;
         --no-behind-proxy) ARG_BEHIND_PROXY=false ;;
         --no-ddns) ARG_DDNS=false ;;
@@ -133,6 +139,12 @@ S3_REGION=${ARG_S3_REGION:-$(prev S3_REGION)}
 S3_BUCKET=${ARG_S3_BUCKET:-$(prev S3_BUCKET)}
 S3_PATH_STYLE=${ARG_S3_PATH_STYLE:-$(prev S3_PATH_STYLE)}
 VIDEO_ENABLED=${ARG_VIDEO:-$(prev VIDEO_ENABLED)}
+MAX_FILE_SIZE_MB=${ARG_MAX_FILE_MB:-$(prev MAX_FILE_SIZE_MB)}
+if [[ $ARG_ADMINS_SET -eq 1 ]]; then
+    ADMIN_USER_IDS=$ARG_ADMINS
+else
+    ADMIN_USER_IDS=$(prev ADMIN_USER_IDS)
+fi
 BEHIND_PROXY=${ARG_BEHIND_PROXY:-$(prev BEHIND_PROXY)}
 DDNS_ENABLED=${ARG_DDNS:-$(prev DDNS_ENABLED)}
 APP_TAG=${ARG_APP_TAG:-$(prev APP_TAG)}
@@ -173,6 +185,7 @@ STORAGE=${STORAGE:-minio}
 SERVER_NAME=${SERVER_NAME:-dur.io}
 MINIO_DATA_PATH=${MINIO_DATA_PATH:-./data/minio}
 VIDEO_ENABLED=${VIDEO_ENABLED:-true}
+MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-100}
 BEHIND_PROXY=${BEHIND_PROXY:-false}
 DDNS_ENABLED=${DDNS_ENABLED:-true}
 APP_TAG=${APP_TAG:-$DEFAULT_APP_TAG}
@@ -190,6 +203,19 @@ is_hostname() {
 [[ $SERVER_NAME != *[\'\"$'\n'\\]* ]] || die "--name must not contain quotes, backslashes or newlines"
 [[ -z $ACME_EMAIL || $ACME_EMAIL =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || die "--acme-email: invalid address"
 [[ $VIDEO_ENABLED == true || $VIDEO_ENABLED == false ]] || die "VIDEO_ENABLED must be true|false"
+[[ $MAX_FILE_SIZE_MB =~ ^[1-9][0-9]{0,3}$ ]] || die "--max-file-size: whole number of MB, 1..9999"
+
+# Admin ids: comma separated user ids (ULID), stored upper case without spaces.
+ADMIN_USER_IDS=${ADMIN_USER_IDS//[[:space:]]/}
+ADMIN_USER_IDS=${ADMIN_USER_IDS^^}
+ADMINS_TOML=
+if [[ -n $ADMIN_USER_IDS ]]; then
+    IFS=, read -ra admin_ids <<<"$ADMIN_USER_IDS"
+    for id in "${admin_ids[@]}"; do
+        [[ $id =~ ^[0-9A-HJKMNP-TV-Z]{26}$ ]] || die "--admins: not a user id: '$id'"
+        ADMINS_TOML+="${ADMINS_TOML:+, }\"$id\""
+    done
+fi
 
 # ---------------------------------------------------------------------------- address
 
@@ -440,6 +466,13 @@ fi
 
 check_no_default_secrets
 
+# hCaptcha must stay off (desktop client CSP): refuse a key added behind the generator's back.
+if [[ -n $(env_get REVOLT__API__SECURITY__CAPTCHA__HCAPTCHA_KEY secrets.env) ]] ||
+    { [[ -f Revolt.overrides.toml ]] &&
+        grep -Eq '^[[:space:]]*hcaptcha_key[[:space:]]*=[[:space:]]*"[^"]' Revolt.overrides.toml; }; then
+    die "hCaptcha key in secrets.env or Revolt.overrides.toml: remove it, the desktop client cannot show hCaptcha"
+fi
+
 # External bucket must be reachable before we point autumn at it.
 if [[ $STORAGE == s3 && $SKIP_S3_CHECK -eq 0 ]]; then
     require_cmd docker
@@ -493,6 +526,8 @@ new_env=$(mktemp)
     echo "DUCKDNS_SUBDOMAIN=$DUCKDNS_SUBDOMAIN"
     echo "LIVEKIT_NODE_IP=$LIVEKIT_NODE_IP"
     echo "VIDEO_ENABLED=$VIDEO_ENABLED"
+    echo "MAX_FILE_SIZE_MB=$MAX_FILE_SIZE_MB"
+    echo "ADMIN_USER_IDS=$ADMIN_USER_IDS"
     echo "FILES_STORAGE=$STORAGE"
     echo "MINIO_DATA_PATH=$MINIO_DATA_PATH"
     echo "S3_ENDPOINT=$S3_ENDPOINT"
@@ -508,7 +543,7 @@ new_env=$(mktemp)
             case $k in
                 ADDRESS_MODE | STOAT_DOMAIN | SERVER_IP | SERVER_NAME | ACME_EMAIL | CADDY_SITE | \
                     CADDY_NETWORK_ALIAS | BEHIND_PROXY | DDNS_ENABLED | DUCKDNS_SUBDOMAIN | LIVEKIT_NODE_IP | \
-                    VIDEO_ENABLED | FILES_STORAGE | MINIO_DATA_PATH | S3_ENDPOINT | S3_REGION | S3_BUCKET | \
+                    VIDEO_ENABLED | MAX_FILE_SIZE_MB | ADMIN_USER_IDS | FILES_STORAGE | MINIO_DATA_PATH | S3_ENDPOINT | S3_REGION | S3_BUCKET | \
                     S3_PATH_STYLE | COMPOSE_PROFILES | IMAGE_REGISTRY | APP_TAG) ;;
                 *) printf '%s\n' "$line" ;;
             esac
@@ -548,6 +583,22 @@ endpoint = "$S3_ENDPOINT"
 path_style_buckets = $S3_PATH_STYLE
 region = "$S3_REGION"
 default_bucket = "$S3_BUCKET"
+
+# Instance admins (ADMIN_USER_IDS in .env, --admins): they can end the sessions of any user
+# from the client. Users with \`privileged\` set in the database are admins as well.
+[api.admins]
+users = [$ADMINS_TOML]
+
+# hCaptcha stays OFF. Do not enable it: the desktop client's CSP blocks hCaptcha,
+# so sign-up and login would fail there.
+[api.security.captcha]
+hcaptcha_key = ""
+hcaptcha_sitekey = ""
+
+# Uploads (MAX_FILE_SIZE_MB in .env, --max-file-size): attachments up to $MAX_FILE_SIZE_MB MB,
+# the request body may carry 5 MB of multipart overhead on top.
+[features.limits.global]
+body_limit_size = $(((MAX_FILE_SIZE_MB + 5) * 1000000))
 EOF
     if [[ $VIDEO_ENABLED == true ]]; then
         cat <<'EOF'
@@ -561,6 +612,14 @@ video_resolution = [1920, 1080]
 video_aspect_ratio = [0.3, 10]
 EOF
     fi
+    cat <<EOF
+
+[features.limits.new_user.file_upload_size_limit]
+attachments = $((MAX_FILE_SIZE_MB * 1000000))
+
+[features.limits.default.file_upload_size_limit]
+attachments = $((MAX_FILE_SIZE_MB * 1000000))
+EOF
 } >Revolt.toml
 chmod 644 Revolt.toml
 
@@ -669,6 +728,8 @@ echo "    address:  https://$STOAT_DOMAIN  (mode $MODE$([[ $BEHIND_PROXY == true
 echo "    storage:  $STORAGE$([[ $STORAGE == minio ]] && echo " ($MINIO_DATA_PATH)" || echo " ($S3_ENDPOINT, bucket $S3_BUCKET)")"
 echo "    profiles: ${COMPOSE_PROFILES:-(none)}"
 echo "    images:   ${IMAGE_REGISTRY}durio-*:$APP_TAG"
+echo "    files:    attachments up to $MAX_FILE_SIZE_MB MB"
+echo "    admins:   ${ADMIN_USER_IDS:-(none)}"
 if [[ ${#NEW_SECRETS[@]} -gt 0 ]]; then
     echo "    new in secrets.env: ${NEW_SECRETS[*]}"
 fi

@@ -121,6 +121,25 @@ scripts/smoke.sh --expect-version 0.16.0+fork.N
 - Инвайт: `scripts/compose exec database mongosh -u root -p --authenticationDatabase admin revolt --eval
   'db.account_invites.insertOne({_id: "<код>"})'`, код — `openssl rand -hex 8`.
 - Push (FCM): `generate_config.sh --overwrite --fcm-json service-account.json`.
+- **Размер файлов:** одна ручка — `MAX_FILE_SIZE_MB` в `.env` (по умолчанию `100`), задаётся
+  `generate_config.sh --overwrite --max-file-size <МБ>`. Генератор пишет в `Revolt.toml`
+  `[features.limits.new_user.file_upload_size_limit] attachments` и
+  `[features.limits.default.file_upload_size_limit] attachments` (= МБ × 1 000 000) и
+  `[features.limits.global] body_limit_size` (+5 МБ на multipart). Caddy тело не ограничивает, MinIO тоже;
+  autumn держит файл в памяти при шифровании — лимит памяти контейнера 1536M рассчитан на 100 МБ.
+- **Админы сервера:** `generate_config.sh --overwrite --admins <id>[,<id>...]` (ключ `ADMIN_USER_IDS` в `.env`,
+  в `Revolt.toml` — `[api.admins] users`; пустое значение `--admins ''` снимает всех). Админ в клиенте
+  находит пользователя (id или `имя#1234`) и завершает его сессии — одну или все (потерян телефон, другого
+  устройства нет); вместе с сессией удаляется её устройство E2EE, сокеты закрываются. Действия пишутся в лог
+  `api` (`Admin <id> ended ...`). Админы также все пользователи с `privileged: true` в базе. Id пользователя:
+  `scripts/compose exec database mongosh -u root -p --authenticationDatabase admin revolt --quiet --eval
+  'db.users.findOne({username: "<имя>", discriminator: "<1234>"})._id'`. После смены — рестарт бэкенда.
+- **Демонстрация экрана:** с `--video` (по умолчанию) лимит видео — 1920×1080 при соотношении сторон 0.3–10;
+  частоту кадров и битрейт сервер не ограничивает (LiveKit без лимитов), 1080p 60 fps задаёт клиент.
+  Дорожка больше 1920×1080 по площади отключается voice-ingress.
+- **hCaptcha выключена и включать её нельзя:** CSP десктоп-клиента блокирует hCaptcha, регистрация и вход
+  сломаются. Генератор пишет пустые `[api.security.captcha]` и отказывается работать, если ключ найден в
+  `secrets.env` (`REVOLT__API__SECURITY__CAPTCHA__HCAPTCHA_KEY`) или в `Revolt.overrides.toml`.
 
 ## Сквозное шифрование (E2EE)
 
