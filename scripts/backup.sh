@@ -39,7 +39,9 @@ set -a
 set +a
 
 ping_hc() {
-    [[ -n ${BACKUP_HC_URL:-} ]] && curl -fsS -m 10 --retry 3 -o /dev/null "$BACKUP_HC_URL$1" || true
+    if [[ -n ${BACKUP_HC_URL:-} ]]; then
+        curl -fsS -m 10 --retry 3 -o /dev/null "$BACKUP_HC_URL$1" || true
+    fi
 }
 trap 'ping_hc /fail' ERR
 

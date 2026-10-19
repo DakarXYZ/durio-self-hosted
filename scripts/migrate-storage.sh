@@ -138,7 +138,9 @@ else
     "$ROOT/scripts/generate_config.sh" --overwrite --yes --storage "$TO" "${gen_args[@]}" --skip-s3-check
 fi
 compose up -d --force-recreate "${BACKEND_SERVICES[@]}"
-[[ $TO == s3 ]] && compose stop minio 2>/dev/null || true
+if [[ $TO == s3 ]]; then
+    compose stop minio 2>/dev/null || true
+fi
 
 info "(6) smoke test"
 "$ROOT/scripts/smoke.sh" || warn "smoke test failed — check autumn logs"

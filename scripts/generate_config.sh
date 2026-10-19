@@ -244,7 +244,9 @@ case $MODE in
         ;;
     domain)
         [[ -n $ADDRESS ]] || die "domain mode needs --address <fqdn>"
-        is_hostname "$ADDRESS" && [[ $ADDRESS == *.* ]] || die "invalid domain: $ADDRESS"
+        if ! is_hostname "$ADDRESS" || [[ $ADDRESS != *.* ]]; then
+            die "invalid domain: $ADDRESS"
+        fi
         STOAT_DOMAIN=$ADDRESS
         ;;
     ip)
