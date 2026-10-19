@@ -1,14 +1,61 @@
 # durio-self-hosted
 
-Развёртывание сервера мессенджера **dur.io** (Docker Compose, Ubuntu Server). Форк
-[stoatchat/self-hosted](https://github.com/stoatchat/self-hosted), запускает **наши** образы
-`ghcr.io/dakarxyz/durio-*`. dur.io основан на Stoat и не связан с ним; «Stoat» — товарный знак его владельцев.
+**English summary.** Deployment of a **dur.io** messenger server (Docker Compose on Ubuntu Server): our backend
+images `ghcr.io/dakarxyz/durio-*`, Caddy with Let's Encrypt on a free DuckDNS subdomain, MinIO for files,
+LiveKit for calls, optional end-to-end encryption (beta) for DMs and groups. Step-by-step guide (Russian):
+[docs/deploy-contabo.md](docs/deploy-contabo.md). Licensed under AGPL-3.0.
+
+Развёртывание сервера мессенджера **dur.io**: Docker Compose на Ubuntu Server, запускает **наши** образы
+`ghcr.io/dakarxyz/durio-*`. Автор и владелец — DakarX ([GitHub DakarXYZ](https://github.com/DakarXYZ)).
+
+Основано на [stoatchat/self-hosted](https://github.com/stoatchat/self-hosted). dur.io — независимый форк и не
+связан с проектом Stoat; название и логотип Stoat — товарные знаки их владельцев.
 
 > [!WARNING]
 > **Бэкапов нет.** По умолчанию резервное копирование выключено (`BACKUP_ENABLED=false`, цель не задана).
 > Потеря диска = потеря всех данных и `secrets.env`, а без `REVOLT__FILES__ENCRYPTION_KEY` из `secrets.env`
 > нечитаемы **все** файлы. Сразу после установки сохраните зашифрованную копию `secrets.env` вне сервера и
 > включите бэкапы, как только появится цель (см. [Бэкапы](#бэкапы)).
+
+## Чем отличается от оригинала
+
+- Свои образы бэкенда ([durio-chat](https://github.com/DakarXYZ/durio-chat)) с тегом `0.16.0-fork.N`, все
+  сторонние образы закреплены по версии; сервиса браузерного веб-клиента нет.
+- Неинтерактивный генератор конфигурации: режимы адреса (DuckDNS, sslip.io, свой домен, IP, LAN), хранилище
+  (MinIO или внешний S3), секреты только в `secrets.env`, ручные настройки в `Revolt.overrides.toml`, которые
+  переживают перегенерацию.
+- MongoDB — replica set из одного узла с авторизацией; healthcheck у всех сервисов; лимиты памяти; наружу
+  открыты только Caddy и LiveKit.
+- Сквозное шифрование (E2EE, бета) личных сообщений и групп — включается одной проверенной командой
+  `scripts/e2ee-enable.sh`, обратно не выключается.
+- Администраторы сервера (`--admins`) завершают сеансы пользователей из клиента (например, при потере телефона).
+- Вложения до 100 МБ (`--max-file-size`), видео и демонстрация экрана до 1920×1080.
+- Скрипты обновления с автоматическим откатом, бэкапы restic (заложены, выключены), переезд хранилища,
+  статическая страница сервера со ссылками на приложения и памяткой по E2EE.
+
+## Как развернуть свой сервер
+
+Подробно, с нуля (VPS, укрепление системы, файрвол, DuckDNS, push, первый администратор, выпуск клиентов,
+включение E2EE): **[docs/deploy-contabo.md](docs/deploy-contabo.md)**. Коротко:
+
+```bash
+git clone https://github.com/DakarXYZ/durio-self-hosted && cd durio-self-hosted
+git config core.hooksPath .githooks               # pre-commit: запрет IPv4-адресов в коммитах
+read -rp 'SERVER_IP: ' SERVER_IP && export SERVER_IP   # IP хранится только в .env, никогда в git
+scripts/generate_config.sh --yes --address-mode duckdns --address <name> --no-ddns \
+    --acme-email <почта> --app-tag 0.16.0-fork.N --storage minio
+# сразу: age -r <ключ> secrets.env > secrets.env.age  и унести копию с сервера
+scripts/generate_config.sh --overwrite --yes --fcm-json <service-account.json>   # push (только наши серверы)
+scripts/preflight.sh
+scripts/compose pull && scripts/compose up -d
+scripts/smoke.sh --expect-version 0.16.0+fork.N
+```
+
+Требования: x86-64 с AVX, 2 vCPU / 4 ГБ RAM (лучше 8 ГБ) / 40 ГБ SSD + место под файлы, публичный IPv4,
+открытые 80, 443/tcp+udp, 7881/tcp, 7882/udp. Docker с compose ≥ 2.24, bash, `openssl`, `jq`.
+
+`--no-ddns` — для постоянного IP (контейнер DuckDNS не запускается). Для динамического IP — без флага и с
+`export DUCKDNS_TOKEN=...`.
 
 ## Состав
 
@@ -35,7 +82,7 @@
 | `compose.yml`, `Caddyfile`, `config/site/`, `config/mongo/` | да | мы |
 | `.env` — адрес, режимы, профили, тег образов, `SERVER_IP` | нет | `generate_config.sh` (`--overwrite`) |
 | `secrets.env` (0600) — все секреты как `REVOLT__…` | нет | `generate_config.sh`, только дописывает |
-| `Revolt.toml` — производное от адреса и хранилища | нет | `generate_config.sh` (`--overwrite`) |
+| `Revolt.toml` — производное от адреса, хранилища и настроек генератора | нет | `generate_config.sh` (`--overwrite`) |
 | `Revolt.overrides.toml` — ручные политики | нет | создаётся один раз, дальше только вы |
 | `livekit.yml`, `stoat.json`, `config/caddy/*.caddy` | нет | `generate_config.sh` |
 | `images.lock.env` — дайджесты образов (необязательно) | нет | `upgrade.sh --pin-digests` |
@@ -44,43 +91,59 @@
 Все команды compose — через `scripts/compose` (= `docker compose --env-file .env --env-file secrets.env`):
 сторонние контейнеры получают пароли подстановкой из `secrets.env`.
 
-## Быстрый старт локально (режим `lan`)
+## Настройки
 
-Нужны Docker (compose ≥ 2.24), bash, `openssl`, `jq`. Образы бэкенда собираются локально из
-[durio-chat](https://github.com/DakarXYZ/durio-chat) с именами `durio-api:local` и т. д.
+### Генератор (`scripts/generate_config.sh`)
 
-```bash
-git config core.hooksPath .githooks          # pre-commit: запрет IPv4-адресов в коммитах
-scripts/generate_config.sh --address-mode lan --dev --local-images --address durio.lan \
-    [--server-ip <LAN-IP>]                   # IP нужен LiveKit, чтобы голос шёл с других устройств
-scripts/compose up -d
-scripts/compose ps
-scripts/smoke.sh --local
-```
+Значение берётся из флага, иначе из прежнего `.env`, иначе по умолчанию. Повторный запуск — только с
+`--overwrite` (бэкап `*.<дата>.bak`); `secrets.env` и `Revolt.overrides.toml` он не переписывает никогда.
+После любой перегенерации — рестарт бэкенда (ниже). Полный список — `--help`.
 
-`durio.lan` → IP машины в `hosts` клиента. TLS — самоподписанный корень Caddy
-`data/caddy-data/caddy/pki/authorities/local/root.crt`: установить на тестовые устройства (Android доверяет
-пользовательским CA только в debug-сборке).
+| Опция | По умолчанию | Что делает |
+| --- | --- | --- |
+| `--address-mode`, `--address` | `duckdns` | адрес сервера, см. [Режимы адреса](#режимы-адреса---address-mode) |
+| `--no-ddns` | — | DuckDNS без контейнера обновления IP |
+| `--acme-email` | — | почта аккаунта Let's Encrypt |
+| `--storage`, `--minio-data-path`, `--s3-*` | `minio`, `./data/minio` | хранилище файлов, см. [ниже](#хранилище-файлов---storage) |
+| `--max-file-size MB` | `100` | лимит вложений (`MAX_FILE_SIZE_MB` в `.env`) |
+| `--admins ID[,ID...]` | пусто | администраторы сервера (`ADMIN_USER_IDS`); `''` снимает всех |
+| `--video` / `--no-video` | включено | камера и демонстрация экрана до 1920×1080 |
+| `--fcm-json FILE` | — | ключ сервисного аккаунта Firebase для push |
+| `--name NAME` | `dur.io` | имя сервера в `/.well-known/stoat` |
+| `--app-tag TAG` | тег релиза репозитория | тег образов бэкенда |
+| `--behind-proxy` | выкл. | Caddy слушает `:80` за другим TLS-прокси |
+| `--confirm-address-change` | — | разрешает `--overwrite` сменить адрес (пользователи заново добавят аккаунты) |
 
-## Боевой сервер
+- **Размер файлов:** `--max-file-size` пишет в `Revolt.toml`
+  `[features.limits.new_user.file_upload_size_limit] attachments` и
+  `[features.limits.default.file_upload_size_limit] attachments` (= МБ × 1 000 000) и
+  `[features.limits.global] body_limit_size` (+5 МБ на multipart). Caddy и MinIO тело не ограничивают; autumn
+  держит файл в памяти при шифровании — лимит памяти контейнера 1536M рассчитан на 100 МБ.
+- **Администраторы:** в `Revolt.toml` — `[api.admins] users`; админы также все пользователи с `privileged: true`
+  в базе. Админ в клиенте находит пользователя (id или `имя#1234`) и завершает его сеансы — один или все
+  (потерян телефон, другого устройства нет); вместе с сеансом удаляется его устройство E2EE, сокеты
+  закрываются. Действия пишутся в лог `api` (`Admin <id> ended ...`). Id пользователя:
+  `scripts/compose exec database mongosh -u root -p --authenticationDatabase admin revolt --quiet --eval
+  'db.users.findOne({username: "<имя>", discriminator: "<1234>"})._id'`.
+- **Демонстрация экрана:** с `--video` лимит видео — 1920×1080 при соотношении сторон 0.3–10; частоту кадров и
+  битрейт сервер не ограничивает, 1080p 60 fps задаёт клиент. Дорожка больше 1920×1080 по площади отключается
+  voice-ingress.
+- **hCaptcha выключена и включать её нельзя:** CSP Windows-клиента блокирует hCaptcha, регистрация и вход там
+  сломаются. Генератор пишет пустые `[api.security.captcha]` и отказывается работать, если ключ найден в
+  `secrets.env` (`REVOLT__API__SECURITY__CAPTCHA__HCAPTCHA_KEY`) или в `Revolt.overrides.toml`.
 
-Пошагово — runbook деплоя (`docs/plan/60-deploy.md` в воркспейсе разработки): подготовка VPS, файрвол,
-затем:
+### Ручные настройки (`Revolt.overrides.toml`)
 
-```bash
-git clone https://github.com/DakarXYZ/durio-self-hosted && cd durio-self-hosted
-git config core.hooksPath .githooks
-export SERVER_IP=...                         # только в окружении/.env, не в git
-scripts/generate_config.sh --address-mode duckdns --address <name>.duckdns.org --no-ddns \
-    --acme-email <почта> --app-tag 0.16.0-fork.N --storage minio --yes
-# сразу: age -r <ключ> secrets.env > secrets.env.age  и унести копию с сервера
-scripts/preflight.sh
-scripts/compose pull && scripts/compose up -d
-scripts/smoke.sh --expect-version 0.16.0+fork.N
-```
-
-`--no-ddns` — для постоянного IP (контейнер DuckDNS не запускается). Для динамического IP — без флага и с
-`export DUCKDNS_TOKEN=...`.
+- Создаётся один раз: `invite_only = true`, `trust_cloudflare = true` (Caddy передаёт реальный IP клиента в
+  `CF-Connecting-IP`), `[features.e2ee] enabled = false` (включать — только `scripts/e2ee-enable.sh`).
+- SMTP: `[api.smtp]` в overrides, пароль — `REVOLT__API__SMTP__PASSWORD` в `secrets.env`. Без SMTP почта при
+  регистрации не подтверждается (аккаунт активен сразу).
+- Конфиг читается при старте: после правок — рестарт **всех** бэкенд-сервисов:
+  `scripts/compose up -d --force-recreate api events autumn january crond pushd voice-ingress`.
+- `production = false` всегда (при `true` бэкенд шлёт письма с брендом Stoat и включает Discover).
+- Инвайт: `scripts/compose exec database mongosh -u root -p --authenticationDatabase admin revolt --eval
+  'db.account_invites.insertOne({_id: "<код>"})'`, код — `openssl rand -hex 8`. В Android-приложении поля для
+  кода нет — см. [deploy-contabo.md §10](docs/deploy-contabo.md#10-первый-аккаунт-администратор-приглашения).
 
 ### Режимы адреса (`--address-mode`)
 
@@ -95,7 +158,6 @@ scripts/smoke.sh --expect-version 0.16.0+fork.N
 **Смена адреса = все пользователи заново добавляют аккаунт.** Поэтому адрес выбирают один раз; смена —
 `generate_config.sh --overwrite --confirm-address-change` и рестарт всех сервисов. `data/caddy-data`
 (аккаунт ACME и сертификаты) при переустановке сохранять — иначе можно упереться в лимиты Let's Encrypt.
-`--behind-proxy` — Caddy слушает `:80` за другим TLS-прокси.
 
 ### Хранилище файлов (`--storage`)
 
@@ -108,57 +170,25 @@ scripts/smoke.sh --expect-version 0.16.0+fork.N
 `scripts/migrate-storage.sh --to s3|minio …` (зеркалирование, остановка autumn, дельта, сверка, переключение;
 старое хранилище не удаляется).
 
-## Конфигурация
-
-- Ручные настройки — `Revolt.overrides.toml` (генератор его не трогает): `invite_only = true`,
-  `trust_cloudflare = true` (Caddy передаёт реальный IP клиента в `CF-Connecting-IP`), `[features.e2ee]`.
-  SMTP: `[api.smtp]` в overrides, пароль — `REVOLT__API__SMTP__PASSWORD` в `secrets.env`.
-- Конфиг читается при старте: после правок — рестарт **всех** бэкенд-сервисов:
-  `scripts/compose up -d --force-recreate api events autumn january crond pushd voice-ingress`.
-- `production = false` всегда (при `true` бэкенд шлёт письма с брендом Stoat и включает Discover).
-- **E2EE:** включается только скриптом `scripts/e2ee-enable.sh` и только когда все сервисы и клиенты на версии с
-  E2EE; **выключать нельзя** — см. [Сквозное шифрование (E2EE)](#сквозное-шифрование-e2ee).
-- Инвайт: `scripts/compose exec database mongosh -u root -p --authenticationDatabase admin revolt --eval
-  'db.account_invites.insertOne({_id: "<код>"})'`, код — `openssl rand -hex 8`.
-- Push (FCM): `generate_config.sh --overwrite --fcm-json service-account.json`.
-- **Размер файлов:** одна ручка — `MAX_FILE_SIZE_MB` в `.env` (по умолчанию `100`), задаётся
-  `generate_config.sh --overwrite --max-file-size <МБ>`. Генератор пишет в `Revolt.toml`
-  `[features.limits.new_user.file_upload_size_limit] attachments` и
-  `[features.limits.default.file_upload_size_limit] attachments` (= МБ × 1 000 000) и
-  `[features.limits.global] body_limit_size` (+5 МБ на multipart). Caddy тело не ограничивает, MinIO тоже;
-  autumn держит файл в памяти при шифровании — лимит памяти контейнера 1536M рассчитан на 100 МБ.
-- **Админы сервера:** `generate_config.sh --overwrite --admins <id>[,<id>...]` (ключ `ADMIN_USER_IDS` в `.env`,
-  в `Revolt.toml` — `[api.admins] users`; пустое значение `--admins ''` снимает всех). Админ в клиенте
-  находит пользователя (id или `имя#1234`) и завершает его сессии — одну или все (потерян телефон, другого
-  устройства нет); вместе с сессией удаляется её устройство E2EE, сокеты закрываются. Действия пишутся в лог
-  `api` (`Admin <id> ended ...`). Админы также все пользователи с `privileged: true` в базе. Id пользователя:
-  `scripts/compose exec database mongosh -u root -p --authenticationDatabase admin revolt --quiet --eval
-  'db.users.findOne({username: "<имя>", discriminator: "<1234>"})._id'`. После смены — рестарт бэкенда.
-- **Демонстрация экрана:** с `--video` (по умолчанию) лимит видео — 1920×1080 при соотношении сторон 0.3–10;
-  частоту кадров и битрейт сервер не ограничивает (LiveKit без лимитов), 1080p 60 fps задаёт клиент.
-  Дорожка больше 1920×1080 по площади отключается voice-ingress.
-- **hCaptcha выключена и включать её нельзя:** CSP десктоп-клиента блокирует hCaptcha, регистрация и вход
-  сломаются. Генератор пишет пустые `[api.security.captcha]` и отказывается работать, если ключ найден в
-  `secrets.env` (`REVOLT__API__SECURITY__CAPTCHA__HCAPTCHA_KEY`) или в `Revolt.overrides.toml`.
-
 ## Сквозное шифрование (E2EE)
 
 > [!IMPORTANT]
 > **Notice (0.16.0-fork.N с E2EE):** после обновления до версии с E2EE шифрование остаётся выключенным. Включать —
-> `scripts/e2ee-enable.sh`, когда клиенты с E2EE уже выпущены. **Обратно не выключается.**
+> `scripts/e2ee-enable.sh`, когда клиенты с E2EE уже выпущены. **Обратно не выключается.** E2EE — бета:
+> внешнего аудита не было.
 
 ```bash
 scripts/e2ee-enable.sh --check                 # состояние: overrides, GET /api/, отметка data/.e2ee-enabled
 scripts/e2ee-enable.sh                         # включить (спросит подтверждение; --yes — без вопроса)
-scripts/e2ee-enable.sh --default-for-new-dms   # через 1–2 месяца (O6): новые ЛС шифруются сразу
+scripts/e2ee-enable.sh --default-for-new-dms   # через 1–2 месяца: новые ЛС шифруются сразу
 ```
 
 Скрипт идемпотентен: проверяет, что `GET /api/` отдаёт `features.e2ee` и нашу версию, что все бэкенд-контейнеры
-запущены из образа тега `APP_TAG` (тот же тег и тот же образ после `pull`), пишет `enabled = true` в секцию
-`[features.e2ee]` файла `Revolt.overrides.toml` (остальное не трогает; ключи в другом виде или
-`REVOLT__FEATURES__E2EE__*` в env — отказ), перезапускает **все** бэкенд-сервисы, проверяет `GET /api/` →
-`features.e2ee.enabled = true` и ставит отметку `data/.e2ee-enabled`. С отметкой `scripts/smoke.sh` (и значит
-`upgrade.sh`) падает, если E2EE снова выключено. `--no-restart` только правит файл (без проверок и рестарта).
+запущены из образа тега `APP_TAG`, пишет `enabled = true` в секцию `[features.e2ee]` файла
+`Revolt.overrides.toml` (остальное не трогает; ключи в другом виде или `REVOLT__FEATURES__E2EE__*` в env —
+отказ), перезапускает **все** бэкенд-сервисы, проверяет `GET /api/` → `features.e2ee.enabled = true` и ставит
+отметку `data/.e2ee-enabled`. С отметкой `scripts/smoke.sh` (и значит `upgrade.sh`) падает, если E2EE снова
+выключено. `--no-restart` только правит файл (без проверок и рестарта).
 
 ### Порядок включения
 
@@ -167,7 +197,7 @@ scripts/e2ee-enable.sh --default-for-new-dms   # через 1–2 месяца (
    зашифрованных сообщений показывают «🔒 Зашифрованное сообщение. Обновите приложение.»
    (`legacy_placeholder`).
 3. `scripts/e2ee-enable.sh` → в приложении «Устройства и шифрование» показывает, что шифрование включено.
-4. Через 1–2 месяца (O6) — `scripts/e2ee-enable.sh --default-for-new-dms`: новые ЛС шифруются сразу. Этот флаг
+4. Через 1–2 месяца — `scripts/e2ee-enable.sh --default-for-new-dms`: новые ЛС шифруются сразу. Этот флаг
    можно вернуть в `false` (правка overrides + рестарт всех бэкенд-сервисов): он влияет только на новые ЛС.
    Группы шифруют сами участники.
 
@@ -176,7 +206,7 @@ scripts/e2ee-enable.sh --default-for-new-dms   # через 1–2 месяца (
 ### Выключать нельзя
 
 `enabled = false` после включения ломает зашифрованные чаты: `/e2ee/*` отвечают 404, зашифрованные сообщения не
-принимаются, устройства не получают ключи, бэкап ключей недоступен — чаты становятся «только для чтения» (Q59), а
+принимаются, устройства не получают ключи, бэкап ключей недоступен — чаты становятся «только для чтения», а
 флаг шифрования канала необратим, так что вернуться к открытому тексту они тоже не могут. `scripts/e2ee-enable.sh
 --disable` отказывается. При проблемах с E2EE — откат тега образов (`scripts/upgrade.sh <прежний тег>`, пока
 миграции те же) или исправление вперёд, флаг не трогать. Перенос `Revolt.overrides.toml` при переустановке или
@@ -230,13 +260,15 @@ scripts/compose exec database mongosh -u root -p --authenticationDatabase admin 
 ## Обновление
 
 ```bash
+git fetch --tags && git checkout <новый тег репозитория>
 scripts/upgrade.sh 0.16.0-fork.N [--pin-digests]
 ```
 
 preflight → **всегда** локальный `mongodump --oplog` в `backups/pre-upgrade/` (хранятся 3 последних) →
 полный бэкап, если включён → `pull` → новые `migrations/*.sh` → `api` (миграции БД) → остальные → `smoke.sh`.
 При сбое без миграций БД — автоматический откат тега; если миграции прошли — сервисы останавливаются и
-печатается команда восстановления (`scripts/restore.sh --from-archive …`). Журнал — `logs/`.
+печатается команда восстановления (`scripts/restore.sh --from-archive …`). Журнал — `logs/`. Пока бэкапы
+выключены — перед обновлением снапшот VPS у хостера.
 
 ## Бэкапы
 
@@ -253,6 +285,36 @@ restic (шифрование, дедупликация, 7 дневных / 4 н�
 сохранить вне сервера. Локальная цель спасает от ошибок, но не от потери диска. Восстановление —
 `scripts/restore.sh` (`--dry-run` для проверки). Пока бэкапов нет — снапшоты VPS у хостера вручную.
 
+## Локальный стенд (режим `lan`)
+
+Образы бэкенда собираются локально из [durio-chat](https://github.com/DakarXYZ/durio-chat)
+(`scripts/durio/build-images.sh` → `durio-api:local` и т. д.).
+
+```bash
+scripts/generate_config.sh --address-mode lan --dev --local-images --address durio.lan \
+    [--server-ip <LAN-IP>]                   # IP нужен LiveKit, чтобы голос шёл с других устройств
+scripts/compose up -d
+scripts/compose ps
+scripts/smoke.sh --local
+```
+
+`durio.lan` → IP машины в `hosts` клиента. TLS — самоподписанный корень Caddy
+`data/caddy-data/caddy/pki/authorities/local/root.crt`: установить на тестовые устройства (Android доверяет
+пользовательским CA только в debug-сборке).
+
+## Клиенты
+
+Серверного адреса по умолчанию в клиентах нет: пользователь вводит адрес сервера (например,
+`<name>.duckdns.org`), клиент находит API через `/.well-known/stoat`.
+
+- **Android** — [durio-for-android](https://github.com/DakarXYZ/durio-for-android): APK в GitHub Releases,
+  инструкция для пользователей — в README репозитория.
+- **Windows** — [durio-for-desktop](https://github.com/DakarXYZ/durio-for-desktop): установщик в GitHub Releases,
+  инструкция — в README репозитория.
+
+Push-уведомления на Android работают только на серверах с ключом нашего Firebase-проекта; на других серверах
+приложения работают без фоновых уведомлений.
+
 ## Разработка репозитория
 
 - CI (`.github/workflows/ci.yml`): shellcheck, `scripts/check-no-ip.sh`, и для каждой пары режим × хранилище —
@@ -262,14 +324,18 @@ restic (шифрование, дедупликация, 7 дневных / 4 н�
   `*.example`, частные и документационные диапазоны, строки с пометкой `ip-check: allow`.
 - `migrations/<YYYYMMDD>-<что>.sh` — идемпотентные ручные шаги, выполняет `upgrade.sh`
   (учёт в `data/.applied-migrations`). `migrations/upstream/` — история upstream, не выполняется.
+- Ошибки и предложения — [issues](https://github.com/DakarXYZ/durio-self-hosted/issues).
 
-## Исходный код (AGPL-3.0)
+## Исходный код и лицензия
 
+Исходники всех компонентов dur.io (AGPL-3.0 требует их доступности пользователям сервера):
 [durio-chat](https://github.com/DakarXYZ/durio-chat) (сервер) ·
 [durio-self-hosted](https://github.com/DakarXYZ/durio-self-hosted) ·
 [durio-for-android](https://github.com/DakarXYZ/durio-for-android) ·
 [durio-for-desktop](https://github.com/DakarXYZ/durio-for-desktop) ·
 [durio-for-web](https://github.com/DakarXYZ/durio-for-web) ·
-[durio-javascript-client-sdk](https://github.com/DakarXYZ/durio-javascript-client-sdk)
+[durio-javascript-client-sdk](https://github.com/DakarXYZ/durio-javascript-client-sdk) ·
+[durio-crypt](https://github.com/DakarXYZ/durio-crypt) (крипто-ядро E2EE, Apache-2.0).
 
-Лицензия — [AGPL-3.0](LICENSE), как у upstream.
+Лицензия — [AGPL-3.0](LICENSE), как у оригинала. Copyright © DakarX для изменений dur.io; исходный код
+оригинала — его авторов.
