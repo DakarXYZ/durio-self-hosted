@@ -150,11 +150,12 @@ scripts/smoke.sh --expect-version 0.16.0+fork.N
 - Конфиг читается при старте: после правок — рестарт **всех** бэкенд-сервисов:
   `scripts/compose up -d --force-recreate api events autumn january crond pushd voice-ingress`.
 - `production = false` всегда (при `true` бэкенд шлёт письма с брендом Stoat и включает Discover).
-- Инвайт вручную (первый аккаунт, пока нет админа): `scripts/compose exec database mongosh -u root -p
-  --authenticationDatabase admin revolt --eval 'db.account_invites.insertOne({_id: "<код>"})'`, код —
-  `openssl rand -hex 8`. Такой код бессрочный и одноразовый. Дальше приглашения удобнее создавать в приложении
-  (см. «Приглашения из приложения» выше). В Android-приложении поля для кода нет — см.
-  [deploy-contabo.md §10](docs/deploy-contabo.md#10-первый-аккаунт-администратор-приглашения).
+- Инвайт вручную (только для первого аккаунта, пока нет админа, или как запасной путь админа):
+  `scripts/compose exec database mongosh -u root -p --authenticationDatabase admin revolt --eval
+  'db.account_invites.insertOne({_id: "<код>"})'`, код — `openssl rand -hex 8`. Такой код бессрочный и
+  одноразовый; человек вставляет его (или ссылку `https://<домен>/join/<код>`) в поле приглашения при регистрации
+  в любом клиенте. Дальше приглашения создаются в приложении (см. «Приглашения из приложения» выше), порядок
+  первого запуска — [deploy-contabo.md §10](docs/deploy-contabo.md#10-первый-аккаунт-администратор-приглашения).
 
 ### Режимы адреса (`--address-mode`)
 
