@@ -28,7 +28,8 @@ LiveKit for calls, optional end-to-end encryption (beta) for DMs and groups. Ste
   открыты только Caddy и LiveKit.
 - Сквозное шифрование (E2EE, бета) личных сообщений и групп — включается одной проверенной командой
   `scripts/e2ee-enable.sh`, обратно не выключается.
-- Администраторы сервера (`--admins`) завершают сеансы пользователей из клиента (например, при потере телефона).
+- Администраторы сервера (`--admins`) завершают сеансы пользователей из клиента (например, при потере телефона)
+  и создают в приложении ссылки-приглашения на регистрацию (`https://<домен>/invite/<код>`).
 - Вложения до 100 МБ (`--max-file-size`), видео и демонстрация экрана до 1920×1080.
 - Скрипты обновления с автоматическим откатом, бэкапы restic (заложены, выключены), переезд хранилища,
   статическая страница сервера со ссылками на приложения и памяткой по E2EE.
@@ -71,7 +72,8 @@ scripts/smoke.sh --expect-version 0.16.0+fork.N
 | duckdns | `linuxserver/duckdns` | профиль `duckdns`: обновление IP |
 
 Браузерного клиента нет: на `/` — страница со ссылками на приложения и исходники (`config/site/`), на
-`/e2ee.html` (`/e2ee-en.html`) — памятка пользователю о сквозном шифровании.
+`/e2ee.html` (`/e2ee-en.html`) — памятка пользователю о сквозном шифровании, на `/invite/<код>` — страница
+приглашения (адрес сервера, код, как зарегистрироваться).
 Наружу открыты только `caddy` (80, 443/tcp+udp) и `livekit` (7881/tcp, 7882/udp) — см.
 [docs/host-security.md](docs/host-security.md).
 
@@ -122,9 +124,16 @@ scripts/smoke.sh --expect-version 0.16.0+fork.N
 - **Администраторы:** в `Revolt.toml` — `[api.admins] users`; админы также все пользователи с `privileged: true`
   в базе. Админ в клиенте находит пользователя (id или `имя#1234`) и завершает его сеансы — один или все
   (потерян телефон, другого устройства нет); вместе с сеансом удаляется его устройство E2EE, сокеты
-  закрываются. Действия пишутся в лог `api` (`Admin <id> ended ...`). Id пользователя:
-  `scripts/compose exec database mongosh -u root -p --authenticationDatabase admin revolt --quiet --eval
-  'db.users.findOne({username: "<имя>", discriminator: "<1234>"})._id'`.
+  закрываются. Действия пишутся в лог `api` (`Admin <id> ended ...`, `Admin <id> created invite ...`).
+  Id пользователя: `scripts/compose exec database mongosh -u root -p --authenticationDatabase admin revolt
+  --quiet --eval 'db.users.findOne({username: "<имя>", discriminator: "<1234>"})._id'`.
+- **2FA для админов:** действия администратора требуют включённого в аккаунте TOTP (приложение-аутентификатор):
+  админ подтверждает себя кодом, и сеанс получает права на `[api.admins] elevation_minutes` (60 минут); выход
+  из сеанса права снимает.
+- **Приглашения из приложения:** админ создаёт приглашение на 1, 4, 12 или 24 часа, одноразовое или
+  многоразовое (до истечения срока, число регистраций считается), видит действующие и может отозвать любое.
+  Ссылка `https://<домен>/invite/<код>` открывает страницу Caddy (`config/site/invite.html`) с адресом сервера,
+  кодом и ссылками на приложения. В лог пишутся только первые 4 символа кода.
 - **Демонстрация экрана:** с `--video` лимит видео — 1920×1080 при соотношении сторон 0.3–10; частоту кадров и
   битрейт сервер не ограничивает, 1080p 60 fps задаёт клиент. Дорожка больше 1920×1080 по площади отключается
   voice-ingress.
@@ -141,9 +150,11 @@ scripts/smoke.sh --expect-version 0.16.0+fork.N
 - Конфиг читается при старте: после правок — рестарт **всех** бэкенд-сервисов:
   `scripts/compose up -d --force-recreate api events autumn january crond pushd voice-ingress`.
 - `production = false` всегда (при `true` бэкенд шлёт письма с брендом Stoat и включает Discover).
-- Инвайт: `scripts/compose exec database mongosh -u root -p --authenticationDatabase admin revolt --eval
-  'db.account_invites.insertOne({_id: "<код>"})'`, код — `openssl rand -hex 8`. В Android-приложении поля для
-  кода нет — см. [deploy-contabo.md §10](docs/deploy-contabo.md#10-первый-аккаунт-администратор-приглашения).
+- Инвайт вручную (первый аккаунт, пока нет админа): `scripts/compose exec database mongosh -u root -p
+  --authenticationDatabase admin revolt --eval 'db.account_invites.insertOne({_id: "<код>"})'`, код —
+  `openssl rand -hex 8`. Такой код бессрочный и одноразовый. Дальше приглашения удобнее создавать в приложении
+  (см. «Приглашения из приложения» выше). В Android-приложении поля для кода нет — см.
+  [deploy-contabo.md §10](docs/deploy-contabo.md#10-первый-аккаунт-администратор-приглашения).
 
 ### Режимы адреса (`--address-mode`)
 

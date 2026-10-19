@@ -44,6 +44,19 @@
 		file_server
 	}
 
+	# Invite links from the app, https://<domain>/invite/<code>: one static page for every code,
+	# invite.js reads the code from the address (the only page with scripts, all same-origin).
+	handle /invite/* {
+		root * /srv/site
+		rewrite * /invite.html
+		header Content-Security-Policy "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'"
+		header X-Frame-Options DENY
+		header Cache-Control "no-store"
+		header X-Robots-Tag noindex
+		encode zstd gzip
+		file_server
+	}
+
 	# LiveKit webhooks reach voice-ingress inside the docker network only.
 	handle /ingress* {
 		respond 404

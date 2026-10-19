@@ -73,3 +73,30 @@ h2 {
 li {
   margin: 0.25rem 0;
 }
+
+.field code {
+  display: inline-block;
+  margin: 0.25rem 0.5rem 0.25rem 0;
+  padding: 0.3rem 0.6rem;
+  border: 1px solid var(--muted);
+  border-radius: 4px;
+  font-size: 1.1rem;
+  word-break: break-all;
+}
+
+button {
+  font: inherit;
+  font-size: 0.9rem;
+  padding: 0.3rem 0.8rem;
+  border: 1px solid var(--link);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--link);
+  cursor: pointer;
+}
+
+#en {
+  margin-top: 3rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--muted);
+}
