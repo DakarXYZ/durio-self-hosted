@@ -7,14 +7,14 @@
 <meta name="robots" content="noindex">
 <title>Приглашение — dur.io</title>
 <link rel="stylesheet" href="/style.css">
-<script src="/join.js" defer></script>
+<script src="/invite.js" defer></script>
 </head>
 <body>
 <main>
   <p class="crumbs"><a href="/">dur.io</a> · <a href="#en" hreflang="en" lang="en">English</a></p>
   <h1>Приглашение в dur.io</h1>
-  <p>Вас пригласили зарегистрироваться на этом сервере мессенджера dur.io. Браузерной версии нет —
-    регистрация в приложении.</p>
+  <p>Вас пригласили на сервер мессенджера dur.io. Браузерной версии нет — всё в приложении. Эта же ссылка
+    служит и приглашением на регистрацию.</p>
 
   <div class="invite" data-invite hidden>
     <p class="field">Адрес сервера<br><code data-server></code>
@@ -23,27 +23,30 @@
       <button type="button" data-copy="code" data-done="Скопировано">Копировать</button></p>
     <p><button type="button" data-copy="link" data-done="Ссылка скопирована">Копировать ссылку целиком</button></p>
   </div>
-  <p class="callout" data-missing hidden>В ссылке нет кода приглашения. Попросите администратора прислать её
-    заново.</p>
+  <p class="callout" data-missing hidden>В ссылке нет кода приглашения. Попросите прислать её заново.</p>
   <noscript><p class="callout">Код приглашения — последняя часть адреса этой страницы, после
-    <code>/join/</code>. Адрес сервера — часть до <code>/join/</code>.</p></noscript>
+    <code>/invite/</code>. Адрес сервера — часть до <code>/invite/</code>.</p></noscript>
 
-  <h2>Как зарегистрироваться</h2>
+  <h2>Если аккаунта ещё нет</h2>
   <ol>
     <li>Установите приложение:
       <a href="https://github.com/DakarXYZ/durio-for-android/releases/latest">Android (APK)</a> или
       <a href="https://github.com/DakarXYZ/durio-for-desktop/releases/latest">Windows (установщик)</a>.
       Проверяйте SHA-256 файлов по списку в релизе.</li>
     <li>В приложении добавьте сервер: введите его адрес (выше).</li>
-    <li>Выберите регистрацию и вставьте в поле кода приглашения эту ссылку целиком или только код.</li>
+    <li>Выберите регистрацию и вставьте в поле приглашения эту ссылку целиком или только код. После
+      регистрации вы сразу окажетесь на сервере, куда вас пригласили.</li>
   </ol>
-  <p class="note">Приглашение действует ограниченное время (до 24 часов) и может быть одноразовым. Если оно не
-    принимается — попросите у администратора новое.</p>
+
+  <h2>Если аккаунт уже есть</h2>
+  <p>В приложении нажмите «+» → «Присоединиться к серверу» и вставьте ссылку или код.</p>
+  <p class="note">Приглашение может быть ограничено по времени или числу использований. Если оно не
+    принимается — попросите новое.</p>
 
   <section id="en" lang="en">
     <h1>Invitation to dur.io</h1>
-    <p>You have been invited to sign up on this dur.io messenger server. There is no browser version — you
-      sign up in the app.</p>
+    <p>You have been invited to a server on this dur.io messenger. There is no browser version — everything
+      happens in the app. The same link is also your invitation to sign up.</p>
 
     <div class="invite" data-invite hidden>
       <p class="field">Server address<br><code data-server></code>
@@ -52,21 +55,25 @@
         <button type="button" data-copy="code" data-done="Copied">Copy</button></p>
       <p><button type="button" data-copy="link" data-done="Link copied">Copy the whole link</button></p>
     </div>
-    <p class="callout" data-missing hidden>This link has no invite code. Ask the admin to send it again.</p>
+    <p class="callout" data-missing hidden>This link has no invite code. Ask for it again.</p>
     <noscript><p class="callout">The invite code is the last part of this page's address, after
-      <code>/join/</code>. The server address is the part before <code>/join/</code>.</p></noscript>
+      <code>/invite/</code>. The server address is the part before <code>/invite/</code>.</p></noscript>
 
-    <h2>How to sign up</h2>
+    <h2>No account yet</h2>
     <ol>
       <li>Install the app:
         <a href="https://github.com/DakarXYZ/durio-for-android/releases/latest">Android (APK)</a> or
         <a href="https://github.com/DakarXYZ/durio-for-desktop/releases/latest">Windows (installer)</a>.
         Check the SHA-256 of the files against the list in the release.</li>
       <li>In the app, add the server: enter its address (above).</li>
-      <li>Choose sign up and paste this whole link or just the code into the invite code field.</li>
+      <li>Choose sign up and paste this whole link or just the code into the invite field. Once signed up
+        you are on the server you were invited to.</li>
     </ol>
-    <p class="note">The invite works for a limited time (up to 24 hours) and may work only once. If it is not
-      accepted, ask the admin for a new one.</p>
+
+    <h2>Already have an account</h2>
+    <p>In the app, tap "+" → "Join a server" and paste the link or the code.</p>
+    <p class="note">The invite may be limited in time or number of uses. If it is not accepted, ask for a
+      new one.</p>
   </section>
 
   <footer>dur.io основан на открытом проекте <a href="https://github.com/stoatchat">Stoat</a> и не связан с ним.

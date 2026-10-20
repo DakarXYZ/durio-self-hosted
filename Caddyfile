@@ -44,11 +44,12 @@
 		file_server
 	}
 
-	# Invite links from the app, https://<domain>/join/<code>: one static page for every code,
-	# join.js reads the code from the address (the only page with scripts, all same-origin).
-	handle /join/* {
+	# Invite links (the standard ones of Stoat), https://<domain>/invite/<code>, opened in a
+	# browser: one static page for every code, invite.js reads the code from the address (the
+	# only page with scripts, all same-origin). The same code signs up on the invite-only server.
+	handle /invite/* {
 		root * /srv/site
-		rewrite * /join.html
+		rewrite * /invite.html
 		header Content-Security-Policy "default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'"
 		header X-Frame-Options DENY
 		header Cache-Control "no-store"
