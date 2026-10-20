@@ -93,6 +93,7 @@ rollback() {
         cp -p ".env.$DATE.bak" .env
         [[ -f images.lock.env.$DATE.bak ]] && cp -p "images.lock.env.$DATE.bak" images.lock.env
         compose up -d || true
+        compose up -d --force-recreate caddy || true
         die "rolled back to $OLD_TAG — see $LOG"
     fi
     compose stop "${BACKEND_SERVICES[@]}" gifbox caddy || true
@@ -118,6 +119,9 @@ done
 compose up -d api || rollback
 wait_healthy 600 api || rollback
 compose up -d --remove-orphans || rollback
+# The Caddyfile is a single-file bind mount: a git checkout replaces the file, the running caddy
+# keeps the old one (and the image did not change, so `up -d` leaves it alone)
+compose up -d --force-recreate caddy || rollback
 services=$(compose config --services)
 # shellcheck disable=SC2046 # word splitting intended
 wait_healthy 300 $(grep -vxE 'database-init|createbuckets' <<<"$services") || rollback
