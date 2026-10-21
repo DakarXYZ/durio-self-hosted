@@ -1,0 +1,23 @@
+{
+  "server": "https://example.duckdns.org",
+  "export_dir": "J:/Discord_bkp",
+  "channels": [
+    {
+      "file": "MyServer - Text Channels - general [621791593506275373].json",
+      "channel": "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    },
+    {
+      "file": "MyServer - Text Channels - tech [1074665648434724934].json",
+      "channel": "01ARZ3NDEKTSV4RRFFQ69G5FBV"
+    }
+  ],
+  "options": {
+    "max_file_mb": 100,
+    "batch_size": 100,
+    "max_batch_upload_mb": 500,
+    "link_channel_names": true,
+    "import_avatars": true,
+    "progress_every": 10,
+    "upload_reuse_minutes": 30
+  }
+}

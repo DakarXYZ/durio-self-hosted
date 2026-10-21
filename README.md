@@ -353,6 +353,11 @@ scripts/smoke.sh --local
 Push-уведомления на Android работают только на серверах с ключом нашего Firebase-проекта; на других серверах
 приложения работают без фоновых уведомлений.
 
+## Импорт из Discord
+
+Перенос истории каналов Discord (экспорт DiscordChatExporter, JSON) в каналы сервера dur.io — авторы,
+даты, ответы, файлы: [tools/discord-import/README.md](tools/discord-import/README.md).
+
 ## Разработка репозитория
 
 - CI (`.github/workflows/ci.yml`): shellcheck, `scripts/check-no-ip.sh`, и для каждой пары режим × хранилище —

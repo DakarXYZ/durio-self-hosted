@@ -1,0 +1,4 @@
+# Local mapping and resume state (contain server address and channel ids)
+*.json
+!mapping.example.json
+__pycache__/
