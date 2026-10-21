@@ -254,10 +254,9 @@ services:
     restart: unless-stopped
     logging: *logging
     read_only: true
-    # The caddy binary carries the file capability cap_net_bind_service: without it in the bounding
-    # set exec fails ("operation not permitted"), even with no-new-privileges. :8080 needs no more.
+    # durio-web runs Caddy as nobody on :8080, its binary without file capabilities
+    # (docker/durio-web in durio-for-web), so no capability is needed
     cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
     security_opt: ["no-new-privileges:true"]
     # Caddy's state dirs (autosave, instance id) and temp files; nothing worth keeping
     tmpfs:
