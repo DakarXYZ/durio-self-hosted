@@ -3,6 +3,7 @@
 # copy of the repo, then check it:
 #   generate_config.sh -> docker compose config -q -> check-ports.sh -> caddy validate
 #   -> upload size / admins / hCaptcha in Revolt.toml -> re-run without --overwrite must fail -> --overwrite keeps secrets.env and overrides byte-for-byte
+#   -> --web-tag (WEB_TAG in .env, web service present; ensure_web_tag for an old .env)
 #   -> e2ee-enable.sh --no-restart edits only [features.e2ee], is idempotent, refuses --disable
 #
 # Usage: scripts/ci/test-config.sh <duckdns|duckdns-noddns|sslip|domain|ip|lan|behind-proxy> <minio|s3>
@@ -66,6 +67,10 @@ if [[ $MODE == duckdns ]]; then
 else
     [[ $services != *duckdns* ]] || die "duckdns updater active in mode $MODE"
 fi
+[[ $services == *" web "* ]] || die "web service (browser client) missing"
+want_web=$DEFAULT_WEB_TAG
+[[ $MODE == lan ]] && want_web=local
+[[ $(env_get WEB_TAG "$work/.env") == "$want_web" ]] || die "WEB_TAG is not $want_web in .env"
 
 info "[$MODE/$STORAGE] check-ports.sh"
 "$work/scripts/check-ports.sh" >/dev/null
@@ -115,6 +120,24 @@ if "$work/scripts/generate_config.sh" "${args[@]}" --overwrite >/dev/null 2>&1; 
     die "generator accepted an hCaptcha key in Revolt.overrides.toml"
 fi
 cp "$work/overrides.captcha" "$work/Revolt.overrides.toml"
+
+info "[$MODE/$STORAGE] --web-tag: written, kept by --overwrite, 'latest' refused"
+"$work/scripts/generate_config.sh" "${args[@]}" --overwrite --web-tag 0.1.7 >/dev/null
+[[ $(env_get WEB_TAG "$work/.env") == 0.1.7 ]] || die "--web-tag not written to .env"
+if [[ $MODE != lan ]]; then # lan: --local-images in args sets WEB_TAG=local again
+    "$work/scripts/generate_config.sh" "${args[@]}" --overwrite >/dev/null
+    [[ $(env_get WEB_TAG "$work/.env") == 0.1.7 ]] || die "--overwrite did not keep WEB_TAG"
+fi
+if "$work/scripts/generate_config.sh" "${args[@]}" --overwrite --web-tag latest >/dev/null 2>&1; then
+    die "generator accepted --web-tag latest"
+fi
+[[ $(env_get WEB_TAG "$work/.env") != latest ]] || die "a refused --web-tag reached .env"
+# .env from before the browser client: upgrade.sh / web-upgrade.sh add the default WEB_TAG
+sed -i '/^WEB_TAG=/d' "$work/.env"
+# shellcheck disable=SC2016 # expanded by the inner bash
+bash -c '. "$1/scripts/lib.sh" && ensure_web_tag' _ "$work" >/dev/null
+[[ $(env_get WEB_TAG "$work/.env") == "$DEFAULT_WEB_TAG" ]] || die "ensure_web_tag did not add WEB_TAG"
+"$work/scripts/compose" config -q
 
 info "[$MODE/$STORAGE] re-run without --overwrite must refuse"
 if "$work/scripts/generate_config.sh" "${args[@]}" >/dev/null 2>&1; then

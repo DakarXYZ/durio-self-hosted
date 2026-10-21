@@ -1,4 +1,5 @@
-// Invite page (/invite/<code>, the standard server invite links): shows the server address and the code, copy buttons.
+// Invite page (/invite/<code>, the standard server invite links): shows the server address and the code, copy buttons,
+// "Open in the browser" -> the web client's own invite route /web/app/invite/<code>.
 // Served under CSP script-src 'self': no inline code, no third-party scripts, text only via textContent.
 "use strict";
 
@@ -21,6 +22,7 @@ document.addEventListener("DOMContentLoaded", function () {
 
   each("[data-server]", function (el) { el.textContent = values.server; });
   each("[data-code]", function (el) { el.textContent = values.code; });
+  each("[data-open-web]", function (el) { el.href = "/web/app/invite/" + values.code; });
   each("[data-invite]", function (el) { el.hidden = false; });
 
   // Fallback for browsers without the async clipboard API (or outside a secure context)

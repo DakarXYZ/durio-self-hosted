@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Generates the machine-specific configuration of a dur.io server:
 #
-#   .env                     non-secret settings (address, storage, profiles, image tag)   rewritten by --overwrite
+#   .env                     non-secret settings (address, storage, profiles, image tags)  rewritten by --overwrite
 #   secrets.env              REVOLT__... secrets, passwords, keys (0600)                   append-only, never rewritten
 #   Revolt.toml              derived from address + storage only                           rewritten by --overwrite
 #   Revolt.overrides.toml    manual policies (invite_only, e2ee, ...)                      created once, never touched
@@ -41,8 +41,10 @@ Other:
                           client (lost phone); an empty value removes all
   --fcm-json FILE         Firebase service account JSON -> REVOLT__PUSHD__FCM__* in secrets.env
   --app-tag TAG           image tag (default: current .env value or the release this repo targets)
+  --web-tag TAG           browser client image tag, durio-web (default: current .env value or
+                          the web release this repo targets)
   --image-registry PFX    image prefix (default ghcr.io/dakarxyz/); empty for locally built images
-  --local-images          shorthand for --image-registry '' --app-tag local
+  --local-images          shorthand for --image-registry '' --app-tag local --web-tag local
   --overwrite             regenerate .env/Revolt.toml/... (backups *.<date>.bak); secrets and
                           overrides are never rewritten
   --confirm-address-change  allow --overwrite to change STOAT_DOMAIN (users re-add accounts!)
@@ -56,7 +58,7 @@ EOF
 # ---------------------------------------------------------------------------- arguments
 
 ARG_MODE='' ARG_ADDRESS='' ARG_SERVER_IP='' ARG_NAME='' ARG_EMAIL='' ARG_STORAGE='' ARG_MINIO_PATH=''
-ARG_S3_ENDPOINT='' ARG_S3_REGION='' ARG_S3_BUCKET='' ARG_S3_PATH_STYLE='' ARG_APP_TAG='' ARG_VIDEO=''
+ARG_S3_ENDPOINT='' ARG_S3_REGION='' ARG_S3_BUCKET='' ARG_S3_PATH_STYLE='' ARG_APP_TAG='' ARG_WEB_TAG='' ARG_VIDEO=''
 ARG_BEHIND_PROXY='' ARG_DDNS='' ARG_FCM_JSON='' ARG_MAX_FILE_MB=''
 ARG_ADMINS_SET=0 ARG_ADMINS=
 ARG_IMAGE_REGISTRY_SET=0 ARG_IMAGE_REGISTRY=
@@ -89,8 +91,9 @@ while [[ $# -gt 0 ]]; do
         --skip-s3-check) SKIP_S3_CHECK=1 ;;
         --fcm-json) need_value "$@"; ARG_FCM_JSON=$2; shift ;;
         --app-tag) need_value "$@"; ARG_APP_TAG=$2; shift ;;
+        --web-tag) need_value "$@"; ARG_WEB_TAG=$2; shift ;;
         --image-registry) [[ $# -ge 2 ]] || die "option $1 needs a value"; ARG_IMAGE_REGISTRY_SET=1; ARG_IMAGE_REGISTRY=$2; shift ;;
-        --local-images) ARG_IMAGE_REGISTRY_SET=1; ARG_IMAGE_REGISTRY=; ARG_APP_TAG=local ;;
+        --local-images) ARG_IMAGE_REGISTRY_SET=1; ARG_IMAGE_REGISTRY=; ARG_APP_TAG=local; ARG_WEB_TAG=local ;;
         --video) ARG_VIDEO=true ;;
         --no-video) ARG_VIDEO=false ;;
         --max-file-size) need_value "$@"; ARG_MAX_FILE_MB=$2; shift ;;
@@ -148,6 +151,7 @@ fi
 BEHIND_PROXY=${ARG_BEHIND_PROXY:-$(prev BEHIND_PROXY)}
 DDNS_ENABLED=${ARG_DDNS:-$(prev DDNS_ENABLED)}
 APP_TAG=${ARG_APP_TAG:-$(prev APP_TAG)}
+WEB_TAG=${ARG_WEB_TAG:-$(prev WEB_TAG)}
 PREV_DOMAIN=$(prev STOAT_DOMAIN)
 PREV_STORAGE=$(prev FILES_STORAGE)
 if [[ $ARG_IMAGE_REGISTRY_SET -eq 1 ]]; then
@@ -189,6 +193,7 @@ MAX_FILE_SIZE_MB=${MAX_FILE_SIZE_MB:-100}
 BEHIND_PROXY=${BEHIND_PROXY:-false}
 DDNS_ENABLED=${DDNS_ENABLED:-true}
 APP_TAG=${APP_TAG:-$DEFAULT_APP_TAG}
+WEB_TAG=${WEB_TAG:-$DEFAULT_WEB_TAG}
 
 is_ipv4() {
     local ip=$1 o
@@ -204,6 +209,7 @@ is_hostname() {
 [[ -z $ACME_EMAIL || $ACME_EMAIL =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] || die "--acme-email: invalid address"
 [[ $VIDEO_ENABLED == true || $VIDEO_ENABLED == false ]] || die "VIDEO_ENABLED must be true|false"
 [[ $MAX_FILE_SIZE_MB =~ ^[1-9][0-9]{0,3}$ ]] || die "--max-file-size: whole number of MB, 1..9999"
+check_tag "$WEB_TAG"
 
 # Admin ids: comma separated user ids (ULID), stored upper case without spaces.
 ADMIN_USER_IDS=${ADMIN_USER_IDS//[[:space:]]/}
@@ -539,6 +545,7 @@ new_env=$(mktemp)
     echo "COMPOSE_PROFILES=$COMPOSE_PROFILES"
     echo "IMAGE_REGISTRY=$IMAGE_REGISTRY"
     echo "APP_TAG=$APP_TAG"
+    echo "WEB_TAG=$WEB_TAG"
     if [[ -f .env ]]; then
         grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | while IFS= read -r line; do
             k=${line%%=*}
@@ -546,7 +553,7 @@ new_env=$(mktemp)
                 ADDRESS_MODE | STOAT_DOMAIN | SERVER_IP | SERVER_NAME | ACME_EMAIL | CADDY_SITE | \
                     CADDY_NETWORK_ALIAS | BEHIND_PROXY | DDNS_ENABLED | DUCKDNS_SUBDOMAIN | LIVEKIT_NODE_IP | \
                     VIDEO_ENABLED | MAX_FILE_SIZE_MB | ADMIN_USER_IDS | FILES_STORAGE | MINIO_DATA_PATH | S3_ENDPOINT | S3_REGION | S3_BUCKET | \
-                    S3_PATH_STYLE | COMPOSE_PROFILES | IMAGE_REGISTRY | APP_TAG) ;;
+                    S3_PATH_STYLE | COMPOSE_PROFILES | IMAGE_REGISTRY | APP_TAG | WEB_TAG) ;;
                 *) printf '%s\n' "$line" ;;
             esac
         done
@@ -730,6 +737,7 @@ echo "    address:  https://$STOAT_DOMAIN  (mode $MODE$([[ $BEHIND_PROXY == true
 echo "    storage:  $STORAGE$([[ $STORAGE == minio ]] && echo " ($MINIO_DATA_PATH)" || echo " ($S3_ENDPOINT, bucket $S3_BUCKET)")"
 echo "    profiles: ${COMPOSE_PROFILES:-(none)}"
 echo "    images:   ${IMAGE_REGISTRY}durio-*:$APP_TAG"
+echo "    web:      ${IMAGE_REGISTRY}durio-web:$WEB_TAG  (https://$STOAT_DOMAIN/web/app/)"
 echo "    files:    attachments up to $MAX_FILE_SIZE_MB MB"
 echo "    admins:   ${ADMIN_USER_IDS:-(none)}"
 if [[ ${#NEW_SECRETS[@]} -gt 0 ]]; then

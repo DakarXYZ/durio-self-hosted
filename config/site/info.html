@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Как подключиться — dur.io</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <h1>dur.io</h1>
+  <p>Это сервер мессенджера dur.io. <strong>Адрес сервера</strong> — домен в адресной строке браузера (без
+    <code>https://</code> и пути). Подключиться можно тремя способами.</p>
+
+  <h2>Как подключиться</h2>
+  <ol>
+    <li><strong>В браузере</strong> — ничего устанавливать не нужно:
+      <a class="button-primary" href="/web/app/">Открыть веб-версию</a></li>
+    <li><strong>Android</strong> — <a href="https://github.com/DakarXYZ/durio-for-android/releases/latest">APK</a>:
+      установите и введите в приложении адрес сервера.</li>
+    <li><strong>Windows</strong> —
+      <a href="https://github.com/DakarXYZ/durio-for-desktop/releases/latest">установщик</a>: установите и введите
+      в приложении адрес сервера.</li>
+  </ol>
+  <p class="note">Проверяйте SHA-256 файлов по списку в релизе.</p>
+
+  <h2>Регистрация по приглашению</h2>
+  <p>Зарегистрироваться можно только по приглашению. Попросите у участника ссылку вида
+    <code>https://&lt;адрес сервера&gt;/invite/&lt;код&gt;</code> и откройте её: эта же ссылка и регистрирует, и
+    добавляет вас на сервер (сообщество), куда вас пригласили. В приложении при регистрации вставьте в поле
+    приглашения ссылку целиком или только код.</p>
+
+  <h2>Сквозное шифрование (бета)</h2>
+  <p>Личные сообщения и группы можно зашифровать так, что сервер их не прочитает: ключи есть только на устройствах
+    участников. В веб-версии ключи хранятся в этом браузере — не включайте шифрование на чужом или общем
+    компьютере. Веб-версия загружается с этого сервера при каждом открытии, поэтому для зашифрованных чатов
+    надёжнее приложения. Подробно — <a href="/e2ee.html">памятка</a>
+    (<a href="/e2ee-en.html" hreflang="en" lang="en">English</a>).</p>
+
+  <h2>Исходный код (AGPL-3.0)</h2>
+  <ul>
+    <li><a href="https://github.com/DakarXYZ/durio-chat">durio-chat</a> — сервер (форк stoatchat)</li>
+    <li><a href="https://github.com/DakarXYZ/durio-self-hosted">durio-self-hosted</a> — развёртывание</li>
+    <li><a href="https://github.com/DakarXYZ/durio-for-android">durio-for-android</a> — Android-клиент</li>
+    <li><a href="https://github.com/DakarXYZ/durio-for-desktop">durio-for-desktop</a> — Windows-клиент</li>
+    <li><a href="https://github.com/DakarXYZ/durio-for-web">durio-for-web</a> — веб-версия и интерфейс
+      Windows-клиента</li>
+    <li><a href="https://github.com/DakarXYZ/durio-javascript-client-sdk">durio-javascript-client-sdk</a> — JS SDK</li>
+  </ul>
+
+  <h2>Связь с администратором</h2>
+  <p><a href="https://github.com/DakarXYZ/durio-self-hosted/issues">github.com/DakarXYZ/durio-self-hosted/issues</a></p>
+
+  <footer>dur.io основан на открытом проекте <a href="https://github.com/stoatchat">Stoat</a> и не связан с ним.
+    © DakarX</footer>
+</main>
+</body>
+</html>

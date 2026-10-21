@@ -35,6 +35,9 @@ if [[ $(env_get FILES_STORAGE .env) == minio ]]; then
     fi
 fi
 
+# Installs from before the browser client: compose refuses to start without WEB_TAG.
+env_has WEB_TAG .env ||
+    die "WEB_TAG missing in .env: scripts/upgrade.sh and scripts/web-upgrade.sh add it (or: generate_config.sh --overwrite)"
 compose config -q
 "$ROOT/scripts/check-ports.sh" >/dev/null
 echo "preflight: OK"

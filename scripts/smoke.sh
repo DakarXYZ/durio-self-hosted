@@ -28,6 +28,8 @@ public_curl_opts "$DOMAIN" "$LOCAL"
 curl_opts=("${CURL_OPTS[@]}")
 base="https://$DOMAIN"
 failed=0
+tmp_body=$(mktemp)
+trap 'rm -f "$tmp_body"' EXIT
 
 check_code() { # PATH EXPECTED_CODE [extra curl args...]
     local path=$1 want=$2 got
@@ -41,13 +43,42 @@ check_code() { # PATH EXPECTED_CODE [extra curl args...]
     fi
 }
 
-check_code / 200
+check_redirect() { # PATH EXPECTED_CODE EXPECTED_LOCATION
+    local path=$1 want=$2 location=$3 got
+    got=$(curl "${curl_opts[@]}" -o /dev/null -w '%{http_code} %{redirect_url}' "$base$path" || true)
+    if [[ $got == "$want $base$location" ]]; then
+        echo "ok   $path -> $want $location"
+    else
+        echo "FAIL $path -> $got (want $want $base$location)"
+        failed=1
+    fi
+}
+
+check_redirect / 302 /web/info
+check_code /web/info 200
+check_redirect /web/app 308 /web/app/
 check_code /e2ee.html 200
 check_code /invite/smoke 200
 check_code /ingress 404
 check_code /ingress/worldwide 404
 check_code /autumn/ 200
 check_code /january/ 200
+
+# Browser client (web service behind Caddy): the HTML shell, and Caddy's CSP on it.
+headers=$(curl "${curl_opts[@]}" -D - -o "$tmp_body" "$base/web/app/" || true)
+code=$(printf '%s\n' "$headers" | awk 'NR == 1 { print $2 }')
+if [[ $code != 200 ]]; then
+    echo "FAIL /web/app/ -> ${code:-000} (want 200; scripts/compose ps web)"
+    failed=1
+elif ! grep -qi '<html' "$tmp_body"; then
+    echo "FAIL /web/app/ -> 200 but no HTML"
+    failed=1
+elif ! grep -qi "^content-security-policy:.*'wasm-unsafe-eval'" <<<"$headers"; then
+    echo "FAIL /web/app/ -> no Content-Security-Policy from Caddy"
+    failed=1
+else
+    echo "ok   /web/app/ -> 200 html"
+fi
 
 discovery=$(curl "${curl_opts[@]}" "$base/.well-known/stoat" || true)
 if jq -e --arg api "$base/api" '.api == $api' <<<"$discovery" >/dev/null 2>&1; then

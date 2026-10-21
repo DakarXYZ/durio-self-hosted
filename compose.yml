@@ -226,6 +226,10 @@ services:
         condition: service_healthy
       events:
         condition: service_healthy
+      # loose on purpose: the site does not wait for the browser client (only /web/app/ needs it)
+      web:
+        condition: service_started
+        required: false
     healthcheck:
       test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:2019/config/"]
       interval: 15s
@@ -240,6 +244,34 @@ services:
       resources:
         limits:
           memory: 256M
+
+  # Browser client (durio-for-web): a Caddy image serving the static client under /web/app/ on
+  # plain :8080, reached only by caddy over the docker network. SPA fallback and cache headers
+  # (index.html no-cache, hashed assets immutable) are set inside the image. Its own tag (WEB_TAG):
+  # scripts/web-upgrade.sh updates it without touching the backend.
+  web:
+    image: ${IMAGE_REGISTRY-ghcr.io/dakarxyz/}durio-web:${WEB_TAG:?missing in .env}${WEB_DIGEST-}
+    restart: unless-stopped
+    logging: *logging
+    read_only: true
+    # The caddy binary carries the file capability cap_net_bind_service: without it in the bounding
+    # set exec fails ("operation not permitted"), even with no-new-privileges. :8080 needs no more.
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    # Caddy's state dirs (autosave, instance id) and temp files; nothing worth keeping
+    tmpfs:
+      - /config:size=4m
+      - /data:size=4m
+      - /tmp:size=16m
+    healthcheck:
+      <<: *healthcheck
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/web/app/"]
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 64M
 
   # REST API. The only service that runs database migrations on start.
   api:

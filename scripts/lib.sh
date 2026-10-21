@@ -11,6 +11,9 @@ LOCK_FILE="$ROOT/images.lock.env"
 # Image tag used when nothing else is known (first install without --app-tag).
 DEFAULT_APP_TAG="0.16.0-fork.1"
 # shellcheck disable=SC2034
+# Browser client image (durio-web, built in durio-for-web) used when nothing else is known.
+DEFAULT_WEB_TAG="0.1.0"
+# shellcheck disable=SC2034
 DEFAULT_IMAGE_REGISTRY="ghcr.io/dakarxyz/"
 
 # Backend services built from our fork (compose service names).
@@ -102,6 +105,27 @@ public_curl_opts() {
 # Marker of a server where E2EE was switched on (scripts/e2ee-enable.sh): never switch it off again.
 # shellcheck disable=SC2034
 E2EE_MARKER="$ROOT/data/.e2ee-enabled"
+
+# check_tag TAG — image tags are explicit releases: docker tag syntax, no 'latest'.
+check_tag() {
+    [[ $1 =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "invalid tag: $1"
+    [[ $1 != latest ]] || die "refusing 'latest': use a release tag"
+}
+
+# ensure_web_tag — installs from before the browser client have no WEB_TAG in .env: add the default.
+ensure_web_tag() {
+    env_has WEB_TAG "$ENV_FILE" && return 0
+    env_set WEB_TAG "$DEFAULT_WEB_TAG" "$ENV_FILE"
+    info "WEB_TAG was missing in .env: set to $DEFAULT_WEB_TAG"
+}
+
+# resolve_digest IMAGE_REF — "@sha256:..." of a registry image (for images.lock.env).
+resolve_digest() {
+    local digest
+    digest=$(docker buildx imagetools inspect --format '{{json .Manifest}}' "$1" | jq -r '.digest')
+    [[ $digest == sha256:* ]] || die "no digest for $1"
+    printf '@%s' "$digest"
+}
 
 require_config() {
     [[ -f $ENV_FILE && -f $SECRETS_FILE ]] ||

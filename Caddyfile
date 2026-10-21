@@ -46,7 +46,8 @@
 
 	# Invite links (the standard ones of Stoat), https://<domain>/invite/<code>, opened in a
 	# browser: one static page for every code, invite.js reads the code from the address (the
-	# only page with scripts, all same-origin). The same code signs up on the invite-only server.
+	# only static page with scripts, all same-origin). The same code signs up on the invite-only
+	# server; "Open in the browser" leads to /web/app/invite/<code>.
 	handle /invite/* {
 		root * /srv/site
 		rewrite * /invite.html
@@ -112,7 +113,45 @@
 		}
 	}
 
-	# Static landing page (no browser client): downloads and source links. Other paths: 404.
+	# No page of its own at /: everyone starts from the instructions.
+	handle / {
+		redir * /web/info 302
+	}
+
+	# How to connect: browser, apps, invites, E2EE, sources. Static, no scripts.
+	handle /web/info {
+		root * /srv/site
+		rewrite * /info.html
+		header Content-Security-Policy "default-src 'none'; img-src 'self'; style-src 'self'"
+		header X-Frame-Options DENY
+		encode zstd gzip
+		file_server
+	}
+
+	handle /web/app {
+		redir * /web/app/ 308
+	}
+
+	# Browser client: the web service serves it under the same path (no stripping), with the SPA
+	# fallback and the cache headers (index.html no-cache, hashed assets immutable). The CSP is
+	# ours: scripts and workers only from this origin (+ WebAssembly), connections (API, WebSocket,
+	# LiveKit) over TLS, no framing of the client.
+	handle /web/app/* {
+		encode zstd gzip
+		header {
+			Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self' https: wss: blob: data:; img-src 'self' https: data: blob:; media-src 'self' https: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-src https:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+			X-Frame-Options DENY
+			Permissions-Policy "camera=(self), microphone=(self), display-capture=(self), geolocation=(), payment=(), usb=()"
+			# after the response from web: replace, never duplicate, what the image might set
+			defer
+		}
+		reverse_proxy web:8080 {
+			import upstream
+		}
+	}
+
+	# Static files of the pages above (/e2ee.html, /e2ee-en.html, /style.css, /invite.js, ...);
+	# the apps link to https://<domain>/e2ee.html. Other paths: 404.
 	handle {
 		root * /srv/site
 		header Content-Security-Policy "default-src 'none'; img-src 'self'; style-src 'self'"
