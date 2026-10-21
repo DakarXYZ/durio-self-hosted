@@ -141,8 +141,8 @@ class PlanTest(unittest.TestCase):
         body = p.payload({"a1": "F1", "a5": None}, None)
         self.assertEqual(body["attachments"], ["F1"])
         self.assertEqual(body["content"].split("\n"), [
-            "look", "[вложение не сохранено: x.png]", "[вложение не сохранено: gone.png]",
-            "[файл слишком большой: big.mp4, 0 МБ]", "[вложение не сохранено: Пример.png]"])
+            "look", "[x.png пал жертвой переезда]", "[gone.png пал жертвой переезда]",
+            "[big.mp4 пал жертвой переезда]", "[Пример.png пал жертвой переезда]"])
 
     def test_payload_shape(self):
         m = msg(7, "hello <@100>", isPinned=True, timestampEdited="2023-02-13T16:20:00.000+04:00")
@@ -190,7 +190,28 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(len(p.uploads()), 10)
         body = p.payload({a.att_id: "F" + a.att_id for a in p.uploads()}, None)
         self.assertEqual(len(body["attachments"]), 10)
-        self.assertEqual(body["content"], "[вложение пропущено: 10.mp4]\n[вложение пропущено: 11.mp4]")
+        self.assertEqual(body["content"], "[10.mp4 пал жертвой переезда]\n[11.mp4 пал жертвой переезда]")
+
+    def test_only_lost_files_skipped(self):
+        remote = {"id": "r", "url": "https://cdn.discordapp.com/attachments/1/2/x.png?ex=1", "fileName": "x.png"}
+        big = {"id": "b", "url": "assets\\big-1.mp4", "fileName": "big.mp4"}
+        local = {"id": "l", "url": "assets\\%D0%9F-abc.png", "fileName": "П.png"}
+        saved = di.saved_check(self.dir, 2000)
+        only_lost = msg(20, " ", attachments=[remote, big])
+        self.assertEqual(di.skip_reason(only_lost, saved), "lost_files")
+        self.assertIsNone(self.plan(only_lost))
+        fwd_lost = msg(21, "", forwardedMessage={"content": "", "attachments": [remote]})
+        self.assertEqual(di.skip_reason(fwd_lost, saved), "lost_files")
+        # one file makes it: the message stays, the lost one becomes a line
+        p = self.plan(msg(22, "", attachments=[remote, local]))
+        self.assertEqual(p.payload({"l": "F"}, None)["content"], "[x.png пал жертвой переезда]")
+        # with text: the text and the line
+        p = self.plan(msg(23, "look", attachments=[remote]))
+        self.assertEqual(p.payload({}, None)["content"], "look\n[x.png пал жертвой переезда]")
+        # a skipped message is not in the index, so replies to it are dropped
+        idx = di.ExportIndex()
+        idx.add_messages([only_lost, msg(22, "", attachments=[remote, local])], saved)
+        self.assertEqual(set(idx.messages), {"22"})
 
 
 class ResumeTest(unittest.TestCase):

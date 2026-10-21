@@ -169,13 +169,13 @@ class ExportIndex:
             if prev is None or (is_remote(prev) and not is_remote(url)):
                 self.avatars[aid] = url
 
-    def add_messages(self, messages: Iterable[dict]) -> None:
+    def add_messages(self, messages: Iterable[dict], saved: Callable[[dict], bool] | None = None) -> None:
         for m in messages:
             self.add_author(m.get("author") or {})
             for u in m.get("mentions") or []:
                 self.add_user(u)
             self.add_user((m.get("interaction") or {}).get("user"))
-            if skip_reason(m) is None:
+            if skip_reason(m, saved) is None:
                 self.messages[m["id"]] = m["timestamp"]
 
     def channel_name_rx(self) -> tuple[Any, dict[str, str]]:
@@ -271,21 +271,29 @@ def poll_result_text(msg: dict) -> str:
     return f"📊 Опрос «{q}» завершён. Голосов: {total}, у победившего ответа: {votes}."
 
 
-def skip_reason(msg: dict) -> str | None:
-    """None if the message is imported, otherwise why it is skipped ('system:<type>' or 'empty')."""
+def skip_reason(msg: dict, saved: Callable[[dict], bool] | None = None) -> str | None:
+    """None if the message is imported, otherwise why it is skipped: 'system:<type>', 'empty', or
+    'lost_files' — nothing but files and none of them will be uploaded (saved tells an attachment
+    that will be; without it every attachment counts)."""
     mtype = msg.get("type", "Default")
     if mtype == POLL_RESULT:
         return None
     if mtype not in NORMAL_TYPES:
         return f"system:{mtype}"
-    if (msg.get("content") or "").strip():
-        return None
-    if msg.get("attachments") or msg.get("stickers"):
-        return None
     fwd = msg.get("forwardedMessage") or {}
-    if (fwd.get("content") or "").strip() or fwd.get("attachments") or fwd.get("stickers"):
+    if (msg.get("content") or "").strip() or msg.get("stickers")             or (fwd.get("content") or "").strip() or fwd.get("stickers"):
         return None
-    return "empty"
+    atts = (msg.get("attachments") or []) + (fwd.get("attachments") or [])
+    if not atts:
+        return "empty"
+    if saved is None or any(saved(a) for a in atts):
+        return None
+    return "lost_files"
+
+
+def saved_check(base_dir: str, max_bytes: int) -> Callable[[dict], bool]:
+    """Whether an export attachment will be uploaded: a local file within the size limit."""
+    return lambda att: plan_attachment(att, base_dir, max_bytes).kind == "local"
 
 
 # ----------------------------------------------------------------------------------------------
@@ -301,9 +309,12 @@ class AttachmentPlan:
     size: int = 0
 
     def placeholder(self) -> str:
-        if self.kind == "too_big":
-            return f"[файл слишком большой: {self.file_name}, {self.size / 2**20:.0f} МБ]"
-        return f"[вложение не сохранено: {self.file_name}]"
+        return lost_file_text(self.file_name)
+
+
+def lost_file_text(name: str) -> str:
+    """The line in place of a file that does not make it (expired link, missing, too big, rejected)."""
+    return f"[{name} пал жертвой переезда]"
 
 
 def resolve_local(base_dir: str, url: str) -> str | None:
@@ -364,7 +375,7 @@ class MessagePlan:
             if fid and len(ids) < MAX_ATTACHMENTS:
                 ids.append(fid)
             elif a.kind == "local" and a.att_id not in uploaded:
-                lines.append(f"[вложение пропущено: {a.file_name}]")
+                lines.append(lost_file_text(a.file_name))
             else:
                 lines.append(a.placeholder())
         content = self.content
@@ -396,7 +407,7 @@ def space_after_mentions(text: str, msg: dict) -> str:
 
 
 def plan_message(msg: dict, idx: ExportIndex, base_dir: str, max_bytes: int) -> MessagePlan | None:
-    if skip_reason(msg) is not None:
+    if skip_reason(msg, saved_check(base_dir, max_bytes)) is not None:
         return None
     author = msg.get("author") or {}
     parts: list[str] = []
@@ -648,7 +659,8 @@ def build_index(cfg: Config) -> ExportIndex:
         c.discord_id, c.name = str(ch.get("id", "")), ch.get("name", "")
         idx.channel_names[c.discord_id] = c.name
         idx.mapped[c.discord_id] = c.channel
-        idx.add_messages(msgs)
+        base = os.path.dirname(os.path.abspath(c.path))
+        idx.add_messages(msgs, saved_check(base, int(float(cfg.options["max_file_mb"]) * 2**20)))
     return idx
 
 
@@ -656,16 +668,20 @@ def channel_plans(cfg: Config, c: ChannelMap, idx: ExportIndex) -> tuple[list[Me
     _, msgs = read_export(c.path)
     base = os.path.dirname(os.path.abspath(c.path))
     max_bytes = int(float(cfg.options["max_file_mb"]) * 2**20)
-    stats: dict[str, Any] = {"total": 0, "skipped": {}, "empty": 0, "replies": 0, "replies_dropped": 0,
+    saved = saved_check(base, max_bytes)
+    stats: dict[str, Any] = {"total": 0, "skipped": {}, "empty": 0, "lost_only": 0, "replies": 0, "replies_dropped": 0,
                              "forwarded": 0, "stickers": 0, "polls": 0, "edited": 0, "pinned": 0,
                              "att": {"local": 0, "remote": 0, "missing": 0, "too_big": 0},
                              "bytes": 0, "authors": set(), "big_files": []}
     plans = []
     for m in msgs:
         stats["total"] += 1
-        reason = skip_reason(m)
+        reason = skip_reason(m, saved)
         if reason == "empty":
             stats["empty"] += 1
+            continue
+        if reason == "lost_files":
+            stats["lost_only"] += 1
             continue
         if reason:
             t = reason.split(":", 1)[1]
@@ -1035,7 +1051,8 @@ def print_stats(c: ChannelMap, plans: list[MessagePlan], st: dict) -> None:
     sk = ", ".join(f"{k}: {v}" for k, v in sorted(st["skipped"].items(), key=lambda x: -x[1])) or "нет"
     a = st["att"]
     log(f"\n== #{c.name} ({c.discord_id}) -> {c.channel}")
-    log(f"   сообщений в файле: {st['total']}; к импорту: {len(plans)}; пустых пропущено: {st['empty']}")
+    log(f"   сообщений в файле: {st['total']}; к импорту: {len(plans)}; пустых пропущено: {st['empty']};"
+        f" только с потерянными файлами (пропущены): {st['lost_only']}")
     log(f"   системные пропущены: {sk}")
     log(f"   ответы: {st['replies']} (отброшено: {st['replies_dropped']}); пересланных: {st['forwarded']};"
         f" стикеров: {st['stickers']}; итогов опросов: {st['polls']}; изменённых: {st['edited']};"
@@ -1081,7 +1098,7 @@ def cmd_check(cfg: Config, args: argparse.Namespace, samples: int = 0) -> int:
     idx = build_index(cfg)
     chans = select_channels(cfg, args.only)
     totals = {"msgs": 0, "bytes": 0, "local": 0, "remote": 0, "missing": 0, "too_big": 0,
-              "replies": 0, "skipped": 0}
+              "replies": 0, "skipped": 0, "lost_only": 0}
     authors: set[str] = set()
     for c in chans:
         plans, st = channel_plans(cfg, c, idx)
@@ -1092,6 +1109,7 @@ def cmd_check(cfg: Config, args: argparse.Namespace, samples: int = 0) -> int:
         totals["bytes"] += st["bytes"]
         totals["replies"] += st["replies"]
         totals["skipped"] += st["empty"] + sum(st["skipped"].values())
+        totals["lost_only"] += st["lost_only"]
         for k in ("local", "remote", "missing", "too_big"):
             totals[k] += st["att"][k]
         authors |= st["authors"]
@@ -1105,11 +1123,12 @@ def cmd_check(cfg: Config, args: argparse.Namespace, samples: int = 0) -> int:
             av_found += 1
             av_bytes += os.path.getsize(p)
     log("\n== Итого")
-    log(f"   сообщений к импорту: {totals['msgs']} (пропущено системных и пустых: {totals['skipped']});"
-        f" ответов: {totals['replies']}")
+    log(f"   сообщений к импорту: {totals['msgs']} (пропущено системных и пустых: {totals['skipped']},"
+        f" только с потерянными файлами: {totals['lost_only']}); ответов: {totals['replies']}")
     log(f"   авторов: {len(authors)} (аватары найдены: {av_found})")
     log(f"   файлов к загрузке: {totals['local']} ({human_size(totals['bytes'])}) + аватары {human_mb(av_bytes)}")
-    log(f"   не будут загружены: удалённые ссылки {totals['remote']}, нет файла {totals['missing']},"
+    log(f"   не будут загружены (вместо них — «[имя] пал жертвой переезда», сообщения из одних таких"
+        f" файлов пропущены): удалённые ссылки {totals['remote']}, нет файла {totals['missing']},"
         f" больше {cfg.options['max_file_mb']} МБ {totals['too_big']}")
     if problems:
         log(f"\nВ конфиге проблем: {len(problems)}, см. выше.")
