@@ -36,6 +36,14 @@ def index(**kw):
 
 
 class ContentTest(unittest.TestCase):
+    def test_space_after_mentions(self):
+        msg = {"mentions": [{"name": "dakarx", "nickname": "DakarX"}]}
+        self.assertEqual(
+            di.space_after_mentions("@DakarXhttps://x.org @DakarX hi", msg),
+            "@DakarX https://x.org @DakarX hi",
+        )
+        self.assertEqual(di.space_after_mentions("@Bobhttps://x.org", {}), "@Bobhttps://x.org")
+
     def test_user_mentions(self):
         idx = index()
         self.assertEqual(di.convert_content("hi <@100> and <@!200>", idx), "hi @Alice and @Bob")

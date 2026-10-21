@@ -385,6 +385,16 @@ class MessagePlan:
         }
 
 
+def space_after_mentions(text: str, msg: dict) -> str:
+    """DiscordChatExporter renders `<@id> https://…` as `@Namehttps://…`: put the space back
+    after a mentioned name that runs straight into a link."""
+    for u in msg.get("mentions") or []:
+        for name in {u.get("nickname"), u.get("name")}:
+            if name:
+                text = text.replace(f"@{name}http", f"@{name} http")
+    return text
+
+
 def plan_message(msg: dict, idx: ExportIndex, base_dir: str, max_bytes: int) -> MessagePlan | None:
     if skip_reason(msg) is not None:
         return None
@@ -393,7 +403,7 @@ def plan_message(msg: dict, idx: ExportIndex, base_dir: str, max_bytes: int) -> 
     if msg.get("type") == POLL_RESULT:
         parts.append(poll_result_text(msg))
     else:
-        text = convert_content(msg.get("content") or "", idx).strip()
+        text = convert_content(space_after_mentions(msg.get("content") or "", msg), idx).strip()
         if text:
             parts.append(text)
     atts = [plan_attachment(a, base_dir, max_bytes) for a in msg.get("attachments") or []]
