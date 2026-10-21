@@ -13,6 +13,7 @@
 | `<admin>` | имя администратора на VPS | — |
 | `<DUCKDNS_TOKEN>` | токен учётной записи DuckDNS | менеджер паролей; на сервере — только если нужен контейнер обновления IP |
 | `0.16.0-fork.N` | тег образов бэкенда (`APP_TAG`); в `GET /api/` он виден как `0.16.0+fork.N` | `.env` |
+| `0.1.N` | тег образа веб-клиента `durio-web` (`WEB_TAG`), меняется отдельно от бэкенда | `.env` |
 
 > [!NOTE]
 > Порядок и команды сверены с кодом репозитория (`scripts/*.sh`, `compose.yml`, `Caddyfile`). Стек целиком
@@ -198,7 +199,8 @@ cd durio-self-hosted
 git config core.hooksPath .githooks          # pre-commit: запрет IPv4-адресов в коммитах
 ```
 
-Тег релиза репозитория развёртывания должен соответствовать тегу образов (`DEFAULT_APP_TAG` в `scripts/lib.sh`).
+Тег релиза репозитория развёртывания должен соответствовать тегу образов (`DEFAULT_APP_TAG` в `scripts/lib.sh`;
+веб-клиент — `DEFAULT_WEB_TAG` там же, другой тег — `--web-tag`).
 Пока теги `durio-self-hosted` не заведены — клонировать `main` и явно передать `--app-tag`.
 
 Генератор пишет `.env`, `secrets.env`, `Revolt.toml`, `Revolt.overrides.toml`, `livekit.yml`, `stoat.json` и
@@ -227,6 +229,7 @@ scripts/generate_config.sh --yes \
 | `--fcm-json FILE` | ключ сервисного аккаунта Firebase → `REVOLT__PUSHD__FCM__*` в `secrets.env` |
 | `--video` / `--no-video` | камера и демонстрация экрана, до 1920×1080 (по умолчанию включено) |
 | `--name NAME` | отображаемое имя сервера в `/.well-known/stoat` (по умолчанию `dur.io`) |
+| `--web-tag TAG` | тег образа веб-клиента `durio-web` (`WEB_TAG`, по умолчанию `DEFAULT_WEB_TAG`) |
 | `--overwrite` | перегенерировать `.env`/`Revolt.toml`/… с бэкапом `*.<дата>.bak`; `secrets.env` и `Revolt.overrides.toml` не трогаются никогда |
 
 Что получилось:
@@ -281,7 +284,9 @@ scripts/smoke.sh --expect-version 0.16.0+fork.N
 Первый старт: Mongo создаёт replica set `rs0` (сервис `database-init`), `api` выполняет миграции БД, Caddy
 получает сертификат Let's Encrypt (порт 80 должен быть открыт снаружи). Это может занять пару минут.
 
-`scripts/smoke.sh` проверяет: `/`, `/e2ee.html` и страницу приглашения `/invite/<код>` (200), `/ingress` (404), `/autumn/`, `/january/`,
+`scripts/smoke.sh` проверяет: редиректы `/` → `/web/info` (302) и `/web/app` → `/web/app/` (308), `/web/info`,
+`/e2ee.html` и страницу приглашения `/invite/<код>` (200), веб-клиент `/web/app/` (200, HTML, CSP от Caddy),
+`/ingress` (404), `/autumn/`, `/january/`,
 `/.well-known/stoat` с полем `api`, `GET /api/` с ожидаемой версией, что тело 3 МиБ доходит до API, WebSocket `/ws`.
 
 Ручные проверки:
@@ -352,8 +357,9 @@ scripts/compose up -d --force-recreate api events autumn january crond pushd voi
   или код; после выбора имени приложение сразу заводит его на сервер;
 - **с аккаунтом** — «+» → «Присоединиться к серверу» → ссылка или код.
 
-В браузере ссылка открывает статическую страницу сервера (браузерного клиента нет) с адресом, кодом, кнопками
-«Копировать», ссылками на APK и установщик Windows и этими двумя путями.
+В браузере ссылка открывает статическую страницу сервера с кнопкой «Открыть в браузере» (веб-клиент,
+`/web/app/invite/<код>`: регистрация и вход на сервер прямо в браузере), адресом, кодом, кнопками «Копировать»,
+ссылками на APK и установщик Windows и этими двумя путями.
 
 В **«Администрировании»** (настройки, видно только администратору) можно найти пользователя (id или
 `имя#1234`) и завершить один или все его сеансы — например, после потери телефона. Вместе с сеансом удаляется его устройство E2EE. Действия пишутся в лог `api`
@@ -381,9 +387,13 @@ scripts/compose up -d --force-recreate api events autumn january crond pushd voi
 3. **durio-for-desktop `v0.1.0`** (Windows): сначала запушить for-web и обновить пин сборки, затем тег → CI
    создаёт черновик релиза с установщиком без подписи и `SHA256SUMS`; опубликовать вручную после сверки.
    Подпись через SignPath — по желанию, позже.
+4. **Веб-клиент** (`durio-web`): образ `ghcr.io/dakarxyz/durio-web:<тег>` собирает CI
+   [durio-for-web](https://github.com/DakarXYZ/durio-for-web); на сервер — `scripts/web-upgrade.sh <тег>`
+   ([§14](#14-обновление-и-откат)).
 
-Ссылки на APK и установщик уже есть на странице сервера `https://duri0.duckdns.org/` (`config/site/index.html`),
-памятка по E2EE — `https://duri0.duckdns.org/e2ee.html`.
+`https://duri0.duckdns.org/` ведёт на инструкцию `/web/info` (`config/site/info.html`): веб-версия
+(`/web/app/`), ссылки на APK и установщик, регистрация по приглашению; памятка по E2EE —
+`https://duri0.duckdns.org/e2ee.html`.
 
 ## 12. Включение E2EE
 
@@ -437,6 +447,16 @@ scripts/upgrade.sh 0.16.0-fork.N+1
   (`scripts/restore.sh --from-archive backups/pre-upgrade/<файл>.archive.gz`). Либо — откат снапшота VPS.
 - Ручной откат тега без миграций: `scripts/upgrade.sh <прежний тег>`.
 
+Веб-клиент — вместе с бэкендом (`scripts/upgrade.sh 0.16.0-fork.N+1 --web-tag 0.1.N`) или отдельно, без дампа
+и без остановки бэкенда:
+
+```bash
+scripts/web-upgrade.sh 0.1.N          # WEB_TAG → pull → up web → healthy → smoke.sh; при сбое — прежний WEB_TAG
+```
+
+Если `.env` создан до появления веб-клиента, `WEB_TAG` в нём нет: `upgrade.sh` и `web-upgrade.sh` дописывают
+`DEFAULT_WEB_TAG` сами, `preflight.sh` и `scripts/compose` до этого падают с «WEB_TAG missing in .env».
+
 ## 15. Бэкапы
 
 Скрипты готовы, но **выключены** (`BACKUP_ENABLED=false`): потеря диска = потеря данных. Пока цели нет —
@@ -462,6 +482,9 @@ restic, таймер 03:30 UTC, 7 дневных / 4 недельных / 6 ме
 **WebSocket не подключается / клиент «бесконечно подключается».** `scripts/smoke.sh` (проверка `/ws`),
 `scripts/compose ps events` (healthy), `scripts/compose logs events`. Путь — ровно `/ws`. Проверить, что ничего
 не стоит перед Caddy (если стоит — генератор с `--behind-proxy`).
+
+**Веб-версия не открывается (502 на `/web/app/`).** `scripts/compose ps web` (healthy), `scripts/compose logs web`.
+Остальной сайт и приложения от неё не зависят; откат — `scripts/web-upgrade.sh <прежний тег>`.
 
 **Звонки: нет звука/видео, сигналинг есть.** Медиа идут мимо Caddy: открыты ли 7882/udp и 7881/tcp (ufw, файрвол
 Contabo, `nmap -sU -p 7882`). LiveKit узнаёт внешний IP через STUN (`use_external_ip: true`) — нужен исходящий
@@ -495,6 +518,7 @@ UDP; после смены IP — `scripts/compose restart livekit`. TURN вык
 - [ ] `scripts/compose ps` — всё healthy; `smoke.sh --expect-version` зелёный; внешний `nmap` совпадает с таблицей
 - [ ] Первый аккаунт создан, назначен администратором (`--admins`), рестарт бэкенда; у админа включён TOTP,
   свой сервер создан, ссылка `/invite/<код>` открывает страницу приглашения и годится для регистрации
+- [ ] `https://duri0.duckdns.org/` → `/web/info`; «Открыть веб-версию» открывает клиент, вход в браузере
 - [ ] Вживую: вход, файл, звонок, push; снапшот «стек развёрнут»
 - [ ] Релизы: durio-crypt `v0.2.1` (`.sha256` = пин Android) → APK → Windows `v0.1.0`
 - [ ] E2EE включено `scripts/e2ee-enable.sh` только после релиза APK с E2EE; `smoke.sh` зелёный

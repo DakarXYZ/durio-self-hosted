@@ -2,7 +2,8 @@
 
 **English summary.** Deployment of a **dur.io** messenger server (Docker Compose on Ubuntu Server): our backend
 images `ghcr.io/dakarxyz/durio-*`, Caddy with Let's Encrypt on a free DuckDNS subdomain, MinIO for files,
-LiveKit for calls, optional end-to-end encryption (beta) for DMs and groups. Step-by-step guide (Russian):
+LiveKit for calls, the browser client at `/web/app/` (image `durio-web`), optional end-to-end encryption (beta)
+for DMs and groups. Step-by-step guide (Russian):
 [docs/deploy-contabo.md](docs/deploy-contabo.md). Licensed under AGPL-3.0.
 
 Развёртывание сервера мессенджера **dur.io**: Docker Compose на Ubuntu Server, запускает **наши** образы
@@ -20,7 +21,7 @@ LiveKit for calls, optional end-to-end encryption (beta) for DMs and groups. Ste
 ## Чем отличается от оригинала
 
 - Свои образы бэкенда ([durio-chat](https://github.com/DakarXYZ/durio-chat)) с тегом `0.16.0-fork.N`, все
-  сторонние образы закреплены по версии; сервиса браузерного веб-клиента нет.
+  сторонние образы закреплены по версии; веб-клиент — отдельный образ `durio-web` со своим тегом (`WEB_TAG`).
 - Неинтерактивный генератор конфигурации: режимы адреса (DuckDNS, sslip.io, свой домен, IP, LAN), хранилище
   (MinIO или внешний S3), секреты только в `secrets.env`, ручные настройки в `Revolt.overrides.toml`, которые
   переживают перегенерацию.
@@ -33,7 +34,7 @@ LiveKit for calls, optional end-to-end encryption (beta) for DMs and groups. Ste
   (`https://<домен>/invite/<код>`): друг регистрируется с ним и сразу оказывается на этом сервере.
 - Вложения до 100 МБ (`--max-file-size`), видео и демонстрация экрана до 1920×1080.
 - Скрипты обновления с автоматическим откатом, бэкапы restic (заложены, выключены), переезд хранилища,
-  статическая страница сервера со ссылками на приложения и памяткой по E2EE.
+  страница-инструкция сервера (`/web/info`) со ссылками на веб-версию и приложения и памяткой по E2EE.
 
 ## Как развернуть свой сервер
 
@@ -68,13 +69,19 @@ scripts/smoke.sh --expect-version 0.16.0+fork.N
 | database + database-init | `mongo:8.0` | replica set `rs0` из одного узла, с авторизацией |
 | redis, rabbit | `valkey`, `rabbitmq` | брокеры (без бэкапа, эфемерны) |
 | minio + createbuckets | `pgsty/silo`, `pgsty/mc` | профиль `minio`: файлы на сервере |
-| caddy | `caddy:2.10` | TLS, прокси, discovery `/.well-known/stoat`, статическая страница `/` |
+| caddy | `caddy:2.10` | TLS, прокси, discovery `/.well-known/stoat`, статические страницы (`config/site/`) |
+| web | `durio-web` | веб-клиент на `/web/app/` (Caddy внутри образа, порт 8080 только во внутренней сети) |
 | livekit | `livekit-server` | голос и видео |
 | duckdns | `linuxserver/duckdns` | профиль `duckdns`: обновление IP |
 
-Браузерного клиента нет: на `/` — страница со ссылками на приложения и исходники (`config/site/`), на
-`/e2ee.html` (`/e2ee-en.html`) — памятка пользователю о сквозном шифровании, на `/invite/<код>` — страница
-приглашения (адрес сервера, код, как зарегистрироваться или войти на сервер).
+Веб-клиент ([durio-for-web](https://github.com/DakarXYZ/durio-for-web)) — на `/web/app/`: Caddy проксирует сервис
+`web` без изменения пути и задаёт CSP; кэширование и SPA-fallback — внутри образа. Тег образа `WEB_TAG` в
+`.env` меняется отдельно от бэкенда (`scripts/web-upgrade.sh`). `/` перенаправляет на `/web/info` — инструкцию
+(`config/site/info.html`): адрес сервера, веб-версия, APK и установщик Windows, регистрация по приглашению,
+E2EE, исходники. На `/e2ee.html` (`/e2ee-en.html`) — памятка пользователю о сквозном шифровании, на
+`/invite/<код>` — страница приглашения (кнопка «Открыть в браузере», адрес сервера, код, как зарегистрироваться
+или войти на сервер). Ключи E2EE веб-версия хранит в браузере, а её код каждый раз приходит с сервера, поэтому
+для зашифрованных чатов надёжнее приложения — так и сказано на `/web/info`.
 Наружу открыты только `caddy` (80, 443/tcp+udp) и `livekit` (7881/tcp, 7882/udp) — см.
 [docs/host-security.md](docs/host-security.md).
 
@@ -114,6 +121,7 @@ scripts/smoke.sh --expect-version 0.16.0+fork.N
 | `--fcm-json FILE` | — | ключ сервисного аккаунта Firebase для push |
 | `--name NAME` | `dur.io` | имя сервера в `/.well-known/stoat` |
 | `--app-tag TAG` | тег релиза репозитория | тег образов бэкенда |
+| `--web-tag TAG` | `DEFAULT_WEB_TAG` (`scripts/lib.sh`) | тег образа веб-клиента `durio-web` (`WEB_TAG`) |
 | `--behind-proxy` | выкл. | Caddy слушает `:80` за другим TLS-прокси |
 | `--confirm-address-change` | — | разрешает `--overwrite` сменить адрес (пользователи заново добавят аккаунты) |
 
@@ -135,7 +143,8 @@ scripts/smoke.sh --expect-version 0.16.0+fork.N
   у канала). При `invite_only = true` их код принимается и при регистрации (если приглашение не истекло и у него
   остались использования; использование засчитывается при входе на сервер, не при регистрации). Ссылка
   `https://<домен>/invite/<код>`, открытая в браузере, показывает страницу Caddy (`config/site/invite.html`) с
-  адресом сервера, кодом и ссылками на приложения.
+  кнопкой «Открыть в браузере» (веб-клиент, `/web/app/invite/<код>`), адресом сервера, кодом и ссылками на
+  приложения.
 - **Демонстрация экрана:** с `--video` лимит видео — 1920×1080 при соотношении сторон 0.3–10; частоту кадров и
   битрейт сервер не ограничивает, 1080p 60 fps задаёт клиент. Дорожка больше 1920×1080 по площади отключается
   voice-ingress.
@@ -284,6 +293,16 @@ preflight → **всегда** локальный `mongodump --oplog` в `backup
 печатается команда восстановления (`scripts/restore.sh --from-archive …`). Журнал — `logs/`. Пока бэкапы
 выключены — перед обновлением снапшот VPS у хостера.
 
+Веб-клиент обновляется вместе с бэкендом (`scripts/upgrade.sh <тег> --web-tag <тег веба>`) или отдельно, без
+дампа и без остановки бэкенда:
+
+```bash
+scripts/web-upgrade.sh 0.1.N            # WEB_TAG → pull → up web → healthy → smoke.sh; при сбое — прежний WEB_TAG
+```
+
+В `.env` старых установок `WEB_TAG` нет: `upgrade.sh` и `web-upgrade.sh` дописывают `DEFAULT_WEB_TAG`
+(`preflight.sh` до этого останавливается с подсказкой). С `images.lock.env` закрепляется и дайджест `WEB_DIGEST`.
+
 ## Бэкапы
 
 Скрипты готовы, но **выключены**. Включение — одной командой (root), когда будет цель:
@@ -302,7 +321,9 @@ restic (шифрование, дедупликация, 7 дневных / 4 н�
 ## Локальный стенд (режим `lan`)
 
 Образы бэкенда собираются локально из [durio-chat](https://github.com/DakarXYZ/durio-chat)
-(`scripts/durio/build-images.sh` → `durio-api:local` и т. д.).
+(`scripts/durio/build-images.sh` → `durio-api:local` и т. д.), веб-клиент — из
+[durio-for-web](https://github.com/DakarXYZ/durio-for-web) как `durio-web:local` (`--local-images` ставит и
+`WEB_TAG=local`).
 
 ```bash
 scripts/generate_config.sh --address-mode lan --dev --local-images --address durio.lan \
@@ -320,6 +341,9 @@ scripts/smoke.sh --local
 
 Серверного адреса по умолчанию в клиентах нет: пользователь вводит адрес сервера (например,
 `<name>.duckdns.org`), клиент находит API через `/.well-known/stoat`.
+
+- **Браузер** — `https://<домен>/web/app/`, отдаёт сам сервер (сервис `web`, образ из
+  [durio-for-web](https://github.com/DakarXYZ/durio-for-web)); инструкция для пользователей — `/web/info`.
 
 - **Android** — [durio-for-android](https://github.com/DakarXYZ/durio-for-android): APK в GitHub Releases,
   инструкция для пользователей — в README репозитория.
