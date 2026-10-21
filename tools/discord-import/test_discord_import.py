@@ -214,6 +214,35 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(set(idx.messages), {"22"})
 
 
+class RateLimitTest(unittest.TestCase):
+    def test_state_from_headers(self):
+        h = {"X-Ratelimit-Remaining": "0", "X-Ratelimit-Reset-After": "2500", "X-Ratelimit-Limit": "10"}
+        self.assertEqual(di.ratelimit_state(h, 100.0), (0, 102.5))
+        self.assertIsNone(di.ratelimit_state({"Content-Type": "application/json"}, 100.0))
+
+    def test_buckets_per_service(self):
+        self.assertEqual(di.ratelimit_key("https://x.org/autumn/attachments"), "autumn")
+        self.assertEqual(di.ratelimit_key("https://x.org/api/admin/import/channels/1/messages"), "api")
+
+    def test_waits_for_an_empty_bucket_only(self):
+        h = di.Http()
+        slept = []
+        real = di.time.sleep
+        di.time.sleep = slept.append
+        try:
+            h.limits["autumn"] = (0, di.time.time() + 5)
+            h.wait_for_bucket("https://x.org/api/x")
+            self.assertEqual(slept, [])
+            h.wait_for_bucket("https://x.org/autumn/attachments")
+            self.assertEqual(len(slept), 1)
+            self.assertGreater(slept[0], 4)
+            h.limits["autumn"] = (3, di.time.time() + 5)
+            h.wait_for_bucket("https://x.org/autumn/attachments")
+            self.assertEqual(len(slept), 1)
+        finally:
+            di.time.sleep = real
+
+
 class ResumeTest(unittest.TestCase):
     def plans(self, ids):
         return [di.MessagePlan(str(i), "t", None, "1", "n", False, "c", [], [], False) for i in ids]

@@ -829,11 +829,41 @@ def retry_after_seconds(headers: dict[str, str], body: Any) -> float:
     return 5.0
 
 
+def ratelimit_key(url: str) -> str:
+    """Rate limits are per service: /api/… (delta) and /autumn/… (files) count apart."""
+    path = urllib.parse.urlsplit(url).path.strip("/")
+    return path.split("/", 1)[0]
+
+
+def ratelimit_state(headers: dict[str, str], now: float) -> tuple[int, float] | None:
+    """(remaining, time the bucket refills) from the X-RateLimit-* headers of a response."""
+    h = {k.lower(): v for k, v in headers.items()}
+    try:
+        remaining = int(h["x-ratelimit-remaining"])
+        reset_ms = float(h["x-ratelimit-reset-after"])
+    except (KeyError, ValueError):
+        return None
+    return remaining, now + reset_ms / 1000.0
+
+
 class Http:
     def __init__(self, tries: int = 5):
         self.tries = tries
         self.token: str | None = None
         self.ctx = ssl.create_default_context()
+        # Per service: the bucket left after the last response. An upload over the limit is refused
+        # before the server reads its body; for a body of more than a few dozen KB the client then
+        # sees the connection drop (SSL EOF) instead of the 429, so wait for the refill beforehand.
+        self.limits: dict[str, tuple[int, float]] = {}
+
+    def wait_for_bucket(self, url: str) -> None:
+        state = self.limits.get(ratelimit_key(url))
+        if state is None:
+            return
+        remaining, reset_at = state
+        wait = reset_at - time.time()
+        if remaining <= 0 and wait > 0:
+            time.sleep(wait + 0.1)
 
     def _once(self, method: str, url: str, headers: dict[str, str], body: Any,
               timeout: float) -> tuple[int, dict[str, str], Any]:
@@ -876,6 +906,7 @@ class Http:
                 body, length, ctype = body_factory()
                 headers["Content-Type"] = ctype
                 headers["Content-Length"] = str(length)
+            self.wait_for_bucket(url)
             try:
                 status, hdrs, parsed = self._once(method, url, headers, body, timeout)
             except (OSError, http.client.HTTPException) as e:
@@ -886,6 +917,9 @@ class Http:
                 log(f"    сетевая ошибка ({e}); повтор через {wait} с")
                 time.sleep(wait)
                 continue
+            state = ratelimit_state(hdrs, time.time())
+            if state is not None:
+                self.limits[ratelimit_key(url)] = state
             if status == 429:
                 limited += 1
                 if limited > 50:
