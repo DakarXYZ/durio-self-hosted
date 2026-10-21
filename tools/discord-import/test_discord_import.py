@@ -214,6 +214,87 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(set(idx.messages), {"22"})
 
 
+class EmbedTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        os.makedirs(os.path.join(self.dir, "assets"))
+        for name, size in (("thumb.jpg", 10), ("gif.mp4", 20), ("player", 5), ("big.jpg", 5000)):
+            with open(os.path.join(self.dir, "assets", name), "wb") as f:
+                f.write(b"x" * size)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def embed(self, e):
+        return di.plan_embed(e, self.dir, 2000)
+
+    def test_article_card(self):
+        e = self.embed({
+            "title": "Headline", "url": "https://news.example/a", "description": "Body",
+            "color": "#262626", "author": {"name": "Site"},
+            "thumbnail": {"url": "assets\\thumb.jpg", "canonicalUrl": "https://news.example/t.jpg",
+                          "width": 1024, "height": 702}})
+        body = e.payload({"k:image": "F1"}, "k")
+        self.assertEqual(body, {"url": "https://news.example/a", "title": "Headline", "description": "Body",
+                                "site_name": "Site", "colour": "#262626",
+                                "image": {"width": 1024, "height": 702, "small": False, "file": "F1"}})
+        # a narrow picture sits beside the card
+        e = self.embed({"title": "T", "thumbnail": {"url": "assets\\thumb.jpg", "width": 120, "height": 90}})
+        self.assertTrue(e.image.small)
+
+    def test_picture_link(self):
+        e = self.embed({"title": "", "url": "https://img.example/a.jpg", "description": "",
+                        "thumbnail": {"url": "assets\\thumb.jpg", "width": 642, "height": 614}})
+        self.assertEqual(e.payload({"k:image": "F"}, "k"),
+                         {"url": "https://img.example/a.jpg", "image": {"width": 642, "height": 614,
+                                                                         "small": False, "file": "F"}})
+        # the upload was refused: nothing left to show
+        self.assertIsNone(e.payload({"k:image": None}, "k"))
+
+    def test_discord_proxy_falls_back_to_the_original(self):
+        e = self.embed({"title": "T", "thumbnail": {
+            "url": "https://images-ext-1.discordapp.net/external/x/https/site.example/p.jpg",
+            "canonicalUrl": "https://site.example/p.jpg", "width": 750, "height": 562}})
+        self.assertEqual((e.image.kind, e.image.url), ("remote", "https://site.example/p.jpg"))
+        e = self.embed({"title": "T", "thumbnail": {
+            "url": "https://cdn.discordapp.com/attachments/1/2/x.png?ex=1",
+            "canonicalUrl": "https://cdn.discordapp.com/attachments/1/2/x.png?ex=1"}})
+        self.assertIsNone(e.image)
+        # no text and only Discord's expired links: no preview
+        self.assertIsNone(self.embed({"thumbnail": {"url": "https://media.discordapp.net/a.png"}}))
+
+    def test_videos_only_as_video_files(self):
+        e = self.embed({"url": "https://tenor.com/view/x", "video": {"url": "assets\\gif.mp4", "width": 220,
+                                                                    "height": 200}})
+        self.assertEqual(e.video.kind, "local")
+        yt = self.embed({"title": "Clip", "url": "https://www.youtube.com/watch?v=1",
+                         "thumbnail": {"url": "assets\\thumb.jpg", "width": 480, "height": 360},
+                         "video": {"url": "assets\\player", "canonicalUrl": "https://www.youtube.com/embed/1"}})
+        self.assertIsNone(yt.video)
+        self.assertEqual(yt.image.kind, "local")
+
+    def test_limits(self):
+        e = self.embed({"title": "x" * 300, "description": "d\x00\nline", "fields": [{"name": "A", "value": "1"}],
+                        "thumbnail": {"url": "assets\\big.jpg"}})
+        self.assertEqual(len(e.title), di.MAX_EMBED_TITLE)
+        self.assertEqual(e.description, "d\nline\nA: 1")
+        self.assertIsNone(e.image)
+
+    def test_message_payload(self):
+        m = msg(30, "https://news.example/a", embeds=[
+            {"title": "Headline", "url": "https://news.example/a",
+             "thumbnail": {"url": "assets\\thumb.jpg", "width": 1024, "height": 702}},
+            {"title": "", "thumbnail": {"url": "https://cdn.discordapp.com/x.png"}}])
+        p = di.plan_message(m, index(), self.dir, 2000)
+        self.assertEqual(len(p.embeds), 1)
+        self.assertEqual([k for k, _ in p.embed_uploads()], ["embed:30:0:image"])
+        body = p.embeds_payload({"embed:30:0:image": "F"})
+        self.assertEqual(body["original_id"], "30")
+        self.assertEqual(body["embeds"][0]["image"]["file"], "F")
+        # the import payload itself carries no previews
+        self.assertNotIn("embeds", p.payload({}, None))
+
+
 class RateLimitTest(unittest.TestCase):
     def test_state_from_headers(self):
         h = {"X-Ratelimit-Remaining": "0", "X-Ratelimit-Reset-After": "2500", "X-Ratelimit-Limit": "10"}

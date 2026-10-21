@@ -7,6 +7,7 @@ Standard library only, Python 3.10+. See README.md next to this file (Russian).
     python discord_import.py dry-run --config mapping.json
     python discord_import.py import  --config mapping.json [--limit 50] [--only general]
     python discord_import.py status  --config mapping.json
+    python discord_import.py embeds  --config mapping.json [--only general]   (after import)
 
 Server contract (dur.io 0.16.0-fork.3+), auth header x-session-token:
     POST /api/auth/session/login            {email, password, friendly_name} -> Success | MFA ticket
@@ -16,6 +17,10 @@ Server contract (dur.io 0.16.0-fork.3+), auth header x-session-token:
         {"source": "discord", "messages": [{original_id, timestamp, edited, author{original_id, name,
           avatar, bot}, content, attachments[<=10 ids], reply_to[<=5 {original_id, timestamp}], pinned}]}
         (1..100 messages, oldest first) -> {imported, skipped}
+    POST /api/admin/import/channels/<id>/embeds        (dur.io 0.16.0-fork.4+)
+        {"source": "discord", "messages": [{original_id, timestamp, embeds[<=10 {url, title,
+          description, site_name, colour, image{file|url, width, height, small}, video{...}}]}]}
+        -> {updated, missing}; replaces the previews of messages imported before
     Admin calls fail with {"type": "AdminElevationRequired"} once elevation expires: re-elevate, retry.
 """
 from __future__ import annotations
@@ -48,6 +53,15 @@ MAX_CONTENT = 10000
 MAX_ATTACHMENTS = 10
 MAX_REPLIES = 5
 MAX_NAME = 32
+MAX_EMBEDS = 10
+MAX_EMBED_TITLE = 256
+MAX_EMBED_DESCRIPTION = 2000
+MAX_EMBED_SITE_NAME = 100
+# a picture beside the card below this width, under it from this width on
+LARGE_PREVIEW_WIDTH = 400
+VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov", ".m4v")
+# Discord's own hosts: its links in an export are signed and expire (and its media proxy too)
+DISCORD_HOSTS = ("discordapp.com", "discordapp.net", "discord.com", "discord.gg")
 
 # Message types imported as normal messages. Everything else is a system message and is skipped,
 # except PollResult which becomes a short text summary of the closed poll.
@@ -344,6 +358,124 @@ def plan_attachment(att: dict, base_dir: str, max_bytes: int) -> AttachmentPlan:
 
 
 # ----------------------------------------------------------------------------------------------
+# Link previews (Discord's own, from the export)
+# ----------------------------------------------------------------------------------------------
+
+def is_web_url(url: str) -> bool:
+    return url.startswith(("https://", "http://"))
+
+
+def is_discord_url(url: str) -> bool:
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in DISCORD_HOSTS)
+
+
+def clip(text: Any, limit: int) -> str | None:
+    text = "".join(ch for ch in str(text or "") if ch == "\n" or unicodedata.category(ch) != "Cc").strip()
+    if not text:
+        return None
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+@dataclass
+class MediaPlan:
+    kind: str              # local (a file to upload) | remote (an address on the web)
+    width: int
+    height: int
+    path: str | None = None
+    url: str | None = None
+    size: int = 0
+    small: bool = False
+
+    def payload(self, file_id: str | None) -> dict | None:
+        out: dict[str, Any] = {"width": self.width, "height": self.height, "small": self.small}
+        if self.kind == "local":
+            if not file_id:
+                return None
+            out["file"] = file_id
+        else:
+            out["url"] = self.url
+        return out
+
+
+def plan_media(m: dict | None, base_dir: str, max_bytes: int, video: bool = False) -> MediaPlan | None:
+    """A picture or video of a preview: the file saved with the export, otherwise the original
+    address when it is not Discord's (those expire). Videos only as video files (a YouTube
+    player page is not one)."""
+    if not m:
+        return None
+    url, canonical = m.get("url") or "", m.get("canonicalUrl") or ""
+    width, height = int(m.get("width") or 0), int(m.get("height") or 0)
+
+    def playable(name: str) -> bool:
+        return not video or urllib.parse.urlsplit(name).path.lower().endswith(VIDEO_EXTENSIONS)
+
+    if url and not is_remote(url):
+        path = resolve_local(base_dir, url)
+        if path and os.path.getsize(path) <= max_bytes and playable(path):
+            return MediaPlan("local", width, height, path=path, size=os.path.getsize(path))
+    for cand in (canonical, url):
+        if is_web_url(cand) and not is_discord_url(cand) and playable(cand) and len(cand) <= 2000:
+            return MediaPlan("remote", width, height, url=cand)
+    return None
+
+
+@dataclass
+class EmbedPlan:
+    url: str | None
+    title: str | None
+    description: str | None
+    site_name: str | None
+    colour: str | None
+    image: MediaPlan | None
+    video: MediaPlan | None
+
+    def media(self) -> list[tuple[str, MediaPlan]]:
+        return [(k, m) for k, m in (("image", self.image), ("video", self.video)) if m is not None]
+
+    def payload(self, uploaded: dict[str, str | None], key: str) -> dict | None:
+        """API preview; key + ':image'/':video' finds the upload. None when nothing is left to show."""
+        out: dict[str, Any] = {k: v for k, v in (("url", self.url), ("title", self.title),
+                                                 ("description", self.description),
+                                                 ("site_name", self.site_name), ("colour", self.colour))
+                               if v}
+        for kind, m in self.media():
+            media = m.payload(uploaded.get(f"{key}:{kind}"))
+            if media:
+                out[kind] = media
+        if not (self.title or self.description or "image" in out or "video" in out):
+            return None
+        return out
+
+
+def plan_embed(e: dict, base_dir: str, max_bytes: int) -> EmbedPlan | None:
+    """One Discord preview as dur.io shows it: a card (site, title link, text, picture) or, with no
+    text, just the picture or video."""
+    url = e.get("url") if is_web_url(e.get("url") or "") and len(e.get("url") or "") <= 2000 else None
+    title = clip(e.get("title"), MAX_EMBED_TITLE)
+    lines = [e.get("description") or ""]
+    for f in e.get("fields") or []:
+        if f.get("name") or f.get("value"):
+            lines.append(f"{f.get('name') or ''}: {f.get('value') or ''}".strip(": "))
+    description = clip("\n".join(x for x in lines if x), MAX_EMBED_DESCRIPTION)
+    site_name = clip((e.get("author") or {}).get("name"), MAX_EMBED_SITE_NAME)
+    colour = e.get("color") if re.fullmatch(r"#[0-9A-Fa-f]{6}", e.get("color") or "") else None
+
+    pictures = (e.get("images") or []) + ([e["thumbnail"]] if e.get("thumbnail") else [])
+    image = None
+    for pic in pictures:
+        image = plan_media(pic, base_dir, max_bytes)
+        if image:
+            break
+    video = plan_media(e.get("video"), base_dir, max_bytes, video=True)
+    if image and (title or description) and image.width and image.width < LARGE_PREVIEW_WIDTH:
+        image.small = True
+    if not (title or description or image or video):
+        return None
+    return EmbedPlan(url, title, description, site_name, colour, image, video)
+
+
+# ----------------------------------------------------------------------------------------------
 # Message plan (everything except upload results)
 # ----------------------------------------------------------------------------------------------
 
@@ -361,6 +493,17 @@ class MessagePlan:
     pinned: bool
     dropped_replies: int = 0
     forwarded: bool = False
+    embeds: list[EmbedPlan] = field(default_factory=list)
+
+    def embed_uploads(self) -> list[tuple[str, MediaPlan]]:
+        """(upload key, file) of the preview pictures and videos to upload."""
+        return [(f"embed:{self.original_id}:{i}:{kind}", m)
+                for i, e in enumerate(self.embeds) for kind, m in e.media() if m.kind == "local"]
+
+    def embeds_payload(self, uploaded: dict[str, str | None]) -> dict:
+        embeds = [e.payload(uploaded, f"embed:{self.original_id}:{i}") for i, e in enumerate(self.embeds)]
+        return {"original_id": self.original_id, "timestamp": self.timestamp,
+                "embeds": [e for e in embeds if e][:MAX_EMBEDS]}
 
     def uploads(self) -> list[AttachmentPlan]:
         """Local files to upload (at most 10 per message, the rest become text lines)."""
@@ -443,6 +586,13 @@ def plan_message(msg: dict, idx: ExportIndex, base_dir: str, max_bytes: int) -> 
         else:
             dropped += 1
 
+    embeds = []
+    if msg.get("type") != POLL_RESULT:
+        for e in msg.get("embeds") or []:
+            planned = plan_embed(e, base_dir, max_bytes)
+            if planned:
+                embeds.append(planned)
+
     return MessagePlan(
         original_id=msg["id"],
         timestamp=msg["timestamp"],
@@ -456,6 +606,7 @@ def plan_message(msg: dict, idx: ExportIndex, base_dir: str, max_bytes: int) -> 
         pinned=bool(msg.get("isPinned")),
         dropped_replies=dropped,
         forwarded=bool(fwd),
+        embeds=embeds[:MAX_EMBEDS],
     )
 
 
@@ -556,11 +707,8 @@ KEEP_FIELDS = ("id", "type", "timestamp", "timestampEdited", "isPinned", "conten
 
 
 def slim(msg: dict) -> dict:
-    """Drop fields the import never uses (reactions, inline emoji, embeds of normal messages)."""
-    out = {k: msg[k] for k in KEEP_FIELDS if k in msg}
-    if out.get("type") != POLL_RESULT:
-        out.pop("embeds", None)
-    return out
+    """Drop fields the import never uses (reactions, inline emoji, …)."""
+    return {k: msg[k] for k in KEEP_FIELDS if k in msg}
 
 
 class ExportReader:
@@ -672,7 +820,8 @@ def channel_plans(cfg: Config, c: ChannelMap, idx: ExportIndex) -> tuple[list[Me
     stats: dict[str, Any] = {"total": 0, "skipped": {}, "empty": 0, "lost_only": 0, "replies": 0, "replies_dropped": 0,
                              "forwarded": 0, "stickers": 0, "polls": 0, "edited": 0, "pinned": 0,
                              "att": {"local": 0, "remote": 0, "missing": 0, "too_big": 0},
-                             "bytes": 0, "authors": set(), "big_files": []}
+                             "bytes": 0, "authors": set(), "big_files": [],
+                             "embeds": 0, "embed_msgs": 0, "embed_files": 0, "embed_bytes": 0, "embed_remote": 0}
     plans = []
     for m in msgs:
         stats["total"] += 1
@@ -703,6 +852,16 @@ def channel_plans(cfg: Config, c: ChannelMap, idx: ExportIndex) -> tuple[list[Me
             if a.kind == "too_big":
                 stats["big_files"].append((a.file_name, a.size))
         stats["bytes"] += sum(a.size for a in p.uploads())
+        if p.embeds:
+            stats["embed_msgs"] += 1
+            stats["embeds"] += len(p.embeds)
+            for e in p.embeds:
+                for _, m in e.media():
+                    if m.kind == "local":
+                        stats["embed_files"] += 1
+                        stats["embed_bytes"] += m.size
+                    else:
+                        stats["embed_remote"] += 1
     plans.sort(key=lambda p: snowflake(p.original_id))  # exports are chronological; be sure
     return plans, stats
 
@@ -1095,6 +1254,8 @@ def print_stats(c: ChannelMap, plans: list[MessagePlan], st: dict) -> None:
         f" нет файла {a['missing']}, слишком больших {a['too_big']}")
     for name, size in st["big_files"]:
         log(f"     слишком большой: {name} ({human_mb(size)})")
+    log(f"   превью (команда embeds): {st['embeds']} у {st['embed_msgs']} сообщений; картинок и видео"
+        f" к загрузке {st['embed_files']} ({human_size(st['embed_bytes'])}), по ссылке {st['embed_remote']}")
     log(f"   авторов: {len(st['authors'])}")
 
 
@@ -1132,7 +1293,7 @@ def cmd_check(cfg: Config, args: argparse.Namespace, samples: int = 0) -> int:
     idx = build_index(cfg)
     chans = select_channels(cfg, args.only)
     totals = {"msgs": 0, "bytes": 0, "local": 0, "remote": 0, "missing": 0, "too_big": 0,
-              "replies": 0, "skipped": 0, "lost_only": 0}
+              "replies": 0, "skipped": 0, "lost_only": 0, "embeds": 0, "embed_files": 0, "embed_bytes": 0}
     authors: set[str] = set()
     for c in chans:
         plans, st = channel_plans(cfg, c, idx)
@@ -1144,6 +1305,8 @@ def cmd_check(cfg: Config, args: argparse.Namespace, samples: int = 0) -> int:
         totals["replies"] += st["replies"]
         totals["skipped"] += st["empty"] + sum(st["skipped"].values())
         totals["lost_only"] += st["lost_only"]
+        for k in ("embeds", "embed_files", "embed_bytes"):
+            totals[k] += st[k]
         for k in ("local", "remote", "missing", "too_big"):
             totals[k] += st["att"][k]
         authors |= st["authors"]
@@ -1160,6 +1323,8 @@ def cmd_check(cfg: Config, args: argparse.Namespace, samples: int = 0) -> int:
     log(f"   сообщений к импорту: {totals['msgs']} (пропущено системных и пустых: {totals['skipped']},"
         f" только с потерянными файлами: {totals['lost_only']}); ответов: {totals['replies']}")
     log(f"   авторов: {len(authors)} (аватары найдены: {av_found})")
+    log(f"   превью (команда embeds, после import): {totals['embeds']}; файлов к загрузке"
+        f" {totals['embed_files']} ({human_size(totals['embed_bytes'])})")
     log(f"   файлов к загрузке: {totals['local']} ({human_size(totals['bytes'])}) + аватары {human_mb(av_bytes)}")
     log(f"   не будут загружены (вместо них — «[имя] пал жертвой переезда», сообщения из одних таких"
         f" файлов пропущены): удалённые ссылки {totals['remote']}, нет файла {totals['missing']},"
@@ -1292,6 +1457,107 @@ def import_channel(cfg: Config, args: argparse.Namespace, sess: Session, state: 
     state.save()
 
 
+def cmd_embeds(cfg: Config, args: argparse.Namespace) -> int:
+    """Discord's previews onto messages imported before (a channel's import must have run)."""
+    state = State(args.state)
+    log("Чтение экспорта…")
+    idx = build_index(cfg)
+    chans = select_channels(cfg, args.only)
+    log(f"\nСервер: {cfg.server}; каналов: {len(chans)}")
+    if not args.yes:
+        if input("Перенести превью ссылок? [y/N] ").strip().lower() not in ("y", "yes", "д", "да"):
+            return 1
+    sess = Session(cfg, args)
+    try:
+        sess.login()
+        sess.elevate()
+        for c in chans:
+            embeds_channel(cfg, args, sess, state, idx, c)
+        log("\nГотово.")
+        return 0
+    except KeyboardInterrupt:
+        log("\nПрервано (Ctrl+C). Состояние сохранено, повторный запуск продолжит с места остановки.")
+        return 130
+    except (ApiError, ToolError) as e:
+        state.error("-", str(e))
+        log(f"\nОШИБКА: {e}\nСостояние сохранено; после исправления запустите embeds снова.")
+        return 1
+    finally:
+        try:
+            state.save()
+        finally:
+            sess.logout()
+
+
+def embeds_channel(cfg: Config, args: argparse.Namespace, sess: Session, state: State, idx: ExportIndex,
+                   c: ChannelMap) -> None:
+    opts = cfg.options
+    imported = state.data["channels"].get(c.file)
+    if not imported or imported.get("channel") != c.channel or not imported.get("last_original_id"):
+        log(f"\n== #{c.name}: сообщения ещё не импортированы — пропуск (сначала import)")
+        return
+    plans, _ = channel_plans(cfg, c, idx)
+    upto = snowflake(imported["last_original_id"])
+    done = state.data.setdefault("embeds", {}).setdefault(c.file, {"last_original_id": None, "updated": 0,
+                                                                     "missing": 0, "files": 0})
+    last = snowflake(done["last_original_id"])
+    todo = [p for p in plans if p.embeds and last < snowflake(p.original_id) <= upto]
+    if args.limit is not None:
+        todo = todo[: args.limit]
+    log(f"\n== #{c.name} -> {c.channel}: превью осталось у {len(todo)} сообщений")
+    max_age = float(opts["upload_reuse_minutes"]) * 60
+    max_batch = int(float(opts["max_batch_upload_mb"]) * 2**20)
+    batch: list[MessagePlan] = []
+    batch_bytes = 0
+    t0, sent = time.time(), 0
+
+    def flush() -> None:
+        nonlocal batch, batch_bytes, sent
+        if not batch:
+            return
+        uploaded: dict[str, str | None] = {}
+        files = 0
+        for p in batch:
+            for key, m in p.embed_uploads():
+                known, fid = state.cached_upload(key, max_age)
+                if not known:
+                    try:
+                        fid = sess.upload("attachments", m.path or "", os.path.basename(m.path or "file"))
+                        files += 1
+                    except ApiError as e:
+                        if e.status >= 500 or e.status == 429 or e.status == 401:
+                            raise
+                        state.error(c.file, f"{p.original_id}: превью {m.path} отклонено: {e}")
+                        fid = None
+                    state.data["uploads"][key] = {"id": fid, "at": time.time()}
+                    state.save()
+                uploaded[key] = fid
+        payload = {"source": SOURCE, "messages": [p.embeds_payload(uploaded) for p in batch]}
+        r = sess.admin("POST", f"/admin/import/channels/{c.channel}/embeds", "превью", json_body=payload)
+        for p in batch:
+            for key, _ in p.embed_uploads():
+                state.data["uploads"].pop(key, None)
+        done["last_original_id"] = batch[-1].original_id
+        done["updated"] += int(r.get("updated", 0)) if isinstance(r, dict) else 0
+        done["missing"] += int(r.get("missing", 0)) if isinstance(r, dict) else 0
+        done["files"] += files
+        state.save()
+        sent += len(batch)
+        el = max(time.time() - t0, 0.001)
+        log(f"   {sent}/{len(todo)} сообщений с превью, файлов {done['files']}, {sent / el:.1f} сообщ/с")
+        batch, batch_bytes = [], 0
+
+    for p in todo:
+        size = sum(m.size for _, m in p.embed_uploads())
+        if batch and (len(batch) >= int(opts["batch_size"]) or batch_bytes + size > max_batch):
+            flush()
+        batch.append(p)
+        batch_bytes += size
+    flush()
+    if done["missing"]:
+        log(f"   не найдено на сервере: {done['missing']} (не импортированы или канал другой)")
+
+
 def get_avatar(cfg: Config, sess: Session, state: State, idx: ExportIndex, author_id: str,
                max_age: float) -> str | None:
     known, fid = state.cached_avatar(author_id, max_age)
@@ -1318,7 +1584,7 @@ def main(argv: list[str] | None = None) -> int:
         except (AttributeError, ValueError):
             pass
     ap = argparse.ArgumentParser(description="Импорт истории Discord (DiscordChatExporter JSON) в dur.io")
-    ap.add_argument("command", choices=["check", "dry-run", "import", "status"])
+    ap.add_argument("command", choices=["check", "dry-run", "import", "status", "embeds"])
     ap.add_argument("--config", required=True, help="JSON-файл сопоставления каналов")
     ap.add_argument("--state", help="файл состояния (по умолчанию <config>.state.json)")
     ap.add_argument("--only", action="append",
@@ -1340,6 +1606,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_check(cfg, args, samples=max(1, args.samples))
         if args.command == "status":
             return cmd_status(cfg, args)
+        if args.command == "embeds":
+            return cmd_embeds(cfg, args)
         return cmd_import(cfg, args)
     except ToolError as e:
         log(f"ОШИБКА: {e}")
